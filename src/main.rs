@@ -14,24 +14,30 @@ use crate::scan::{Branch, Branches};
 use crate::ticket::Ticket;
 use crate::tracker::Tracker;
 
-use anyhow::{bail, Error};
+use anyhow::{bail, Context, Error};
 use colored::*;
 use env_logger::Env;
 use std::borrow::Borrow;
 use std::path::{Path, PathBuf};
 use structopt::StructOpt;
+use tokio::runtime::Runtime;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
 #[derive(Debug, Clone, StructOpt, Default)]
-#[structopt(rename_all = "kebab")]
+#[structopt(
+    rename_all = "kebab",
+    after_help = "\
+    Set RUST_LOG=survey=debug in the environment to get full logging output.
+    "
+)]
 pub struct Opt {
     /// Path to `nixpkgs` checkout
     #[structopt(
         short,
         long,
         value_name = "PATH",
-        default_value = "nixpkgs-channels",
+        default_value = "nixpkgs",
         parse(from_os_str)
     )]
     nixpkgs: PathBuf,
@@ -44,7 +50,7 @@ pub struct Opt {
         parse(from_os_str)
     )]
     basedir: PathBuf,
-    /// Directory for updated whitelists (expected to be pushed to `whitelist_url` eventually)
+    /// Directory for updated whitelists
     #[structopt(
         short = "w",
         long,
@@ -53,15 +59,6 @@ pub struct Opt {
         parse(from_os_str)
     )]
     whitelist_dir: PathBuf,
-    /// Base URL to load current whitelists from (release name will be appended)
-    #[structopt(
-        short = "W",
-        long,
-        value_name = "URL",
-        default_value = "https://raw.githubusercontent.com/ckauhaus/nixos-vulnerability-roundup/\
-                         master/whitelists"
-    )]
-    whitelist_url: String,
     /// Path to `vulnix` executable
     #[structopt(
         short,
@@ -100,21 +97,30 @@ impl Opt {
     }
 }
 
-fn create(tkt: Ticket, iterdir: &Path, tracker: &Option<Tracker>) -> Result<()> {
+async fn create(tkt: Ticket, iterdir: &Path, tracker: &dyn Tracker) -> Result<()> {
     let f = iterdir.join(tkt.file_name());
+    let name = tkt.name().to_owned();
     if f.exists() {
-        println!("{}: {}", tkt.name(), "skipping, file exists".purple());
+        warn!("{}: skipping, file exists", name.yellow());
         return Ok(());
     }
-    print!("{}: ", tkt.name().yellow());
-    if let Some(t) = tracker.borrow() {
-        let (issue_id, issue_url) = t.create_issue(&tkt)?;
-        print!("issue #{}, ", issue_id);
-        tkt.write(&f, Some(&issue_url))?;
-    } else {
-        tkt.write(&f, None)?
+    let tkt = tracker
+        .create_issue(tkt)
+        .await
+        .with_context(|| format!("Failed to create issue for {}", name.purple().bold()))?;
+    tkt.write(&f)?;
+    Ok(())
+}
+
+async fn issues(tickets: Vec<Ticket>, iterdir: &Path, tracker: &dyn Tracker) -> Result<()> {
+    info!("Creating issues");
+    let handles: Vec<_> = tickets
+        .into_iter()
+        .map(|tkt| create(tkt, iterdir, tracker))
+        .collect();
+    for hdl in handles {
+        hdl.await?;
     }
-    println!("file '{}'", tkt.file_name().display());
     Ok(())
 }
 
@@ -123,35 +129,36 @@ fn run() -> Result<()> {
     let opt = Opt::from_args();
     let branches = Branches::with_repo(&opt.branches, &opt.nixpkgs)?;
     let dir = opt.iterdir();
-    let tracker = match (&opt.repo, &opt.github_token) {
-        (Some(repo), Some(token)) => Some(Tracker::connect_github(token.to_string(), repo)?),
+    let tracker: Box<dyn Tracker> = match (&opt.repo, &opt.github_token) {
+        (Some(repo), Some(token)) => Box::new(tracker::GitHub::new(token.to_string(), repo)?),
         (Some(_), None) => bail!(
             "No Github access token given either as option or via the GITHUB_TOKEN environment \
              variable"
         ),
-        (_, _) => None,
+        (_, _) => Box::new(tracker::Null::new()),
     };
     let scan_res = if opt.no_run {
         branches.load(&dir)?
     } else {
         branches.scan(&opt)?
     };
-    println!("{}", "* Creating issues...".green());
-    for tkt in ticket::ticket_list(opt.iteration, scan_res) {
-        create(tkt, &dir, &tracker)?;
-    }
+    Runtime::new().unwrap().block_on(issues(
+        ticket::ticket_list(opt.iteration, scan_res),
+        &dir,
+        tracker.borrow(),
+    ))?;
     Ok(())
 }
 
 fn main() {
     env_logger::from_env(Env::default().default_filter_or("info")).init();
     if let Err(err) = run() {
-        if err.is::<tracker::Error>() {
-            println!(); // flush partially printed lines
-        }
-        error!("{} {}", "Error:".red().bold(), err);
-        if let Some(source) = err.source() {
-            error!("{}", source);
+        for e in err.chain() {
+            error!("{}", e);
+            // reqwest seems to fold all causes into its head error
+            if e.downcast_ref::<reqwest::Error>().is_some() {
+                break;
+            }
         }
         std::process::exit(1);
     }

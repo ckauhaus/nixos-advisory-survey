@@ -10,7 +10,6 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use smallstr::SmallString;
 use std::collections::HashMap;
-use std::ffi::OsStr;
 use std::fmt;
 use std::fs::{self, File};
 use std::ops::Deref;
@@ -92,13 +91,14 @@ impl Branch {
             "* Scanning derivations from".green(),
             drvfile.display()
         );
-        let full_url = format!("{}/{}.toml", opt.whitelist_url, self.name.as_str());
-        let full_wl = opt
-            .whitelist_dir
-            .join(format!("{}.toml", self.name.as_str()));
+        let full_wl = opt.whitelist_dir.join(format!("{}.toml", self.name));
         let cmd = Exec::cmd(&opt.vulnix)
-            .args(&["-j", "-R", "-w", &full_url, "-W"])
-            .args(&[full_wl.as_os_str(), OsStr::new("-f"), drvfile.as_os_str()]);
+            .args(&["-j", "-R", "-w"])
+            .arg(&full_wl)
+            .arg("-W")
+            .arg(&full_wl)
+            .arg("-f")
+            .arg(drvfile);
         debug!("{}", cmd.to_cmdline_lossy().purple());
         let c = cmd.capture().context("Failed to read stdout from vulnix")?;
         match c.exit_status {
@@ -194,8 +194,7 @@ impl Branches {
     /// Reads previous scan results from a directory
     pub fn load(&self, dir: &Path) -> Result<ScanByBranch> {
         info!(
-            "{} {}",
-            "* Loading scan results from".green(),
+            "Loading scan results from {}",
             dir.display().to_string().yellow()
         );
         let mut sbb = ScanByBranch::new();

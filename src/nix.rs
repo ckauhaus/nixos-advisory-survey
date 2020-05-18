@@ -1,9 +1,9 @@
+use crate::package::VERSION_SPLIT;
+
 use anyhow::{ensure, Result};
 use colored::*;
 use crossbeam::channel::{unbounded, Receiver, Sender};
 use crossbeam::queue::SegQueue;
-use lazy_static::lazy_static;
-use regex::Regex;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -93,10 +93,6 @@ fn nix_instantiate(repo: &Path, attr: Option<&str>) -> Result<DrvPath> {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 struct DrvPath(PathBuf);
 
-lazy_static! {
-    static ref R_VERSION: Regex = Regex::new("^(.+?)-([0-9]).*$").unwrap();
-}
-
 impl DrvPath {
     fn new<P: AsRef<Path>>(p: P) -> Self {
         let p = p.as_ref();
@@ -112,7 +108,7 @@ impl DrvPath {
     }
 
     fn has_version(&self) -> bool {
-        R_VERSION.is_match(&self.0.to_string_lossy())
+        VERSION_SPLIT.is_match(&self.0.to_string_lossy())
     }
 }
 
@@ -133,6 +129,8 @@ impl<T: std::hash::Hash + Eq + std::fmt::Debug + Clone> Seen<T> {
         }
     }
 
+    /// Takes at most n elements from the queue and returns those which are not already seen
+    /// before.
     fn take_max(&mut self, from_queue: &SegQueue<T>, n: usize) -> Vec<T> {
         let mut res = Vec::with_capacity(n);
         while res.len() < n {
@@ -244,4 +242,58 @@ pub fn all_derivations(repo: &Path) -> Result<PathBuf> {
     .unwrap()?;
     let (_, path) = outfile.keep()?;
     Ok(path)
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    #[should_panic]
+    fn invalid_drv_path1() {
+        DrvPath::new("foo/bar");
+    }
+
+    #[test]
+    #[should_panic]
+    fn invalid_drv_path2() {
+        DrvPath::new("/nix/store/0019265pq8ws8sr8np0zdl9p4gxbxnwg-curl-7.65.3");
+    }
+
+    #[test]
+    fn drv_path_has_version() {
+        assert!(DrvPath::new("/nix/store/123-libkrb5-1.17.drv").has_version());
+        assert!(!DrvPath::new("/nix/store/123-system-units.drv").has_version());
+    }
+
+    #[test]
+    fn seen_should_not_add_duplicates() {
+        let mut s = Seen::default();
+        assert_eq!(s.len(), 0);
+        s.add(&1);
+        assert_eq!(s.len(), 1);
+        s.add(&2);
+        assert_eq!(s.len(), 2);
+        s.add(&2);
+        assert_eq!(s.len(), 2);
+        s.add(&1);
+        assert_eq!(s.len(), 2);
+    }
+
+    #[test]
+    fn take_max_should_filter_before_counting() {
+        let checkq = SegQueue::new();
+        checkq.push(1);
+        checkq.push(2);
+        checkq.push(1);
+        checkq.push(2);
+        checkq.push(3);
+        checkq.push(4);
+        let mut s = Seen::default();
+        assert_eq!(s.take_max(&checkq, 3), vec![1, 2, 3]);
+        assert_eq!(checkq.len(), 1);
+        assert_eq!(s.take_max(&checkq, 10), vec![4]);
+        assert_eq!(checkq.len(), 0);
+        assert_eq!(s.take_max(&checkq, 10), Vec::<usize>::new());
+    }
 }

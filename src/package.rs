@@ -41,7 +41,7 @@ impl fmt::Display for Package {
 
 lazy_static! {
     /// See parseDrvName in https://nixos.org/nix/manual/#ssec-builtins
-    static ref VERSION_SPLIT: Regex = Regex::new(r"-[0-9]").unwrap();
+    pub static ref VERSION_SPLIT: Regex = Regex::new(r"-[0-9]").unwrap();
 }
 
 #[derive(Debug, Error)]

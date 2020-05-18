@@ -2,20 +2,24 @@ use crate::advisory::Advisory;
 use crate::package::Package;
 use crate::scan::{Branch, ScanByBranch, ScoreMap};
 
+use colored::*;
 use float_ord::FloatOrd;
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fmt;
-use std::fmt::Write as FWrite;
+use std::format_args;
 use std::fs;
+use std::io::BufWriter;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Ticket {
-    iteration: u32,
-    pkg: Package,
-    affected: HashMap<Advisory, Detail>,
+    pub iteration: u32,
+    pub pkg: Package,
+    pub affected: HashMap<Advisory, Detail>,
+    pub issue_id: Option<u64>,
+    pub issue_url: Option<String>,
 }
 
 impl Ticket {
@@ -24,7 +28,7 @@ impl Ticket {
         Self {
             iteration,
             pkg,
-            affected: HashMap::new(),
+            ..Self::default()
         }
     }
 
@@ -44,15 +48,23 @@ impl Ticket {
     }
 
     /// Writes ticket to disk, optionally with a pointer to a tracker issue
-    pub fn write<P: AsRef<Path>>(&self, file_name: P, issue_url: Option<&str>) -> io::Result<()> {
-        let f = fs::File::create(file_name)?;
-        write!(&f, "{}", self)?;
-        if let Some(url) = issue_url {
-            writeln!(&f, "\n<!-- {} -->", url)?;
-        }
+    pub fn write<P: AsRef<Path>>(&self, file_name: P) -> io::Result<()> {
+        let inum = match self.issue_id {
+            Some(id) => format!("issue #{}, ", id.to_string().green()),
+            None => "".to_owned(),
+        };
+        info!(
+            "{}: {}file {}",
+            self.name().yellow(),
+            inum,
+            self.file_name().to_string_lossy().green()
+        );
+        let mut f = BufWriter::new(fs::File::create(file_name)?);
+        write!(f, "{:#}", self)?;
         Ok(())
     }
 
+    /// Ticket headline
     pub fn summary(&self) -> String {
         let num = self.affected.len();
         let advisory = if num == 1 { "advisory" } else { "advisories" };
@@ -61,52 +73,50 @@ impl Ticket {
             self.iteration, self.pkg.name, num, advisory
         )
     }
+}
 
-    pub fn body(&self) -> String {
-        let mut res = String::with_capacity(1000);
+impl fmt::Display for Ticket {
+    /// Normal Display: only ticket body
+    /// Alternate Display: headline + body
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if f.alternate() {
+            writeln!(f, "{}\n", self.summary())?;
+        }
         writeln!(
-            &mut res,
+            f,
             "\
 [search](https://search.nix.gsc.io/?q={pname}&i=fosho&repos=NixOS-nixpkgs), \
 [files](https://github.com/NixOS/nixpkgs/search?utf8=%E2%9C%93&q={pname}+in%3Apath&type=Code)\n\
         ",
             pname = self.pname()
-        )
-        .ok();
+        )?;
         let mut adv: Vec<(&Advisory, &Detail)> = self.affected.iter().collect();
         adv.sort_unstable_by(cmp_score);
         for (advisory, details) in adv {
             writeln!(
-                &mut res,
+                f,
                 "* [ ] [{adv}](https://nvd.nist.gov/vuln/detail/{adv}) {details}",
                 adv = advisory,
                 details = details
-            )
-            .ok();
+            )?;
         }
-        let relevant: HashSet<&Branch> = self
+        let mut relevant: Vec<String> = self
             .affected
             .values()
             .flat_map(|d| d.branches.iter())
-            .collect();
-        let mut relevant: Vec<String> = relevant
-            .into_iter()
             .map(|b| format!("{}: {}", b.name.as_str(), &b.rev.as_str()[..11]))
             .collect();
         relevant.sort();
+        relevant.dedup();
         writeln!(
-            &mut res,
+            f,
             "\nScanned versions: {}. May contain false positives.",
             relevant.join("; ")
-        )
-        .ok();
-        res
-    }
-}
-
-impl fmt::Display for Ticket {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}\n\n{}", self.summary(), self.body())
+        )?;
+        for url in &self.issue_url {
+            writeln!(f, "\n<!-- {} -->", url)?;
+        }
+        Ok(())
     }
 }
 
@@ -228,11 +238,13 @@ mod test {
                         adv("CVE-2018-17100") => det(&["br1"], None),
                         adv("CVE-2018-17101") => det(&["br1"], None),
                     },
+                    ..Ticket::default()
                 },
                 Ticket {
                     iteration: 1,
                     pkg: pkg("ncurses-6.1"),
                     affected: hashmap! { adv("CVE-2018-10754") => det(&["br1"], None) },
+                    ..Ticket::default()
                 }
             ]
         );
@@ -263,7 +275,8 @@ mod test {
                 affected: hashmap! {
                     adv("CVE-2018-17100") => det(&["br1"], Some(8.8)),
                     adv("CVE-2018-17101") => det(&["br1", "br2"], Some(8.7)),
-                }
+                },
+                ..Ticket::default()
             }]
         );
     }
@@ -282,10 +295,11 @@ mod test {
                 adv("CVE-2018-17100") => Detail { branches: vec![br[0].clone()], score: Some(8.7) },
                 adv("CVE-2018-17101") => Detail { branches: vec![br[0].clone(), br[1].clone()], score: Some(8.8) },
             },
+            ..Ticket::default()
         };
         // should be sorted by score in decreasing order, undefined scores last
         assert_eq!(
-            tkt.to_string(),
+            format!("{:#}", tkt),
             "\
 Vulnerability roundup 2: libtiff-4.0.9: 3 advisories\n\
 \n\
@@ -314,6 +328,7 @@ May contain false positives.\n\
             affected: hashmap! {
                 adv("CVE-2018-17100") => Detail { branches: vec![br[0].clone()], score: Some(8.8) }
             },
+            ..Ticket::default()
         };
         assert!(
             tkt.to_string()
