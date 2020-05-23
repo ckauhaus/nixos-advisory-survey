@@ -5,8 +5,8 @@ use colored::*;
 use crossbeam::channel::{unbounded, Receiver, Sender};
 use crossbeam::queue::SegQueue;
 use serde::Deserialize;
-use std::collections::HashMap;
-use std::collections::HashSet;
+use smallstr::SmallString;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io;
@@ -214,13 +214,25 @@ fn output_runner(drvs: Receiver<Vec<DrvPath>>, out: &mut File) -> Result<()> {
     Ok(())
 }
 
-pub fn all_derivations(repo: &Path) -> Result<PathBuf> {
-    debug!("Expanding all derivations in {}", repo.display());
+/// Recursively expand all drvs starting from nixos/release-combined.nix by inspecting direct
+/// dependencies and Hydra aggregates
+///
+/// - workdir: nixpkgs dir with checked out branch
+///
+/// # Returns
+///
+/// Temporary file containing all recusively expanded derivation paths. File can be deleted after
+/// vulnix invocation.
+pub fn all_derivations(workdir: &Path) -> Result<PathBuf> {
+    info!(
+        "Instantiating derivations in {}",
+        workdir.to_string_lossy().green()
+    );
     let checkq = SegQueue::new();
     let mut outfile = tempfile::Builder::new()
         .prefix("vulnix_scan_drvs.")
         .tempfile()?;
-    checkq.push(nix_instantiate(repo, None)?);
+    checkq.push(nix_instantiate(workdir, None)?);
     crossbeam::scope(|s| -> Result<()> {
         let (out_tx, out_rx) = unbounded();
         let (inst_tx, inst_rx) = unbounded();
@@ -228,7 +240,7 @@ pub fn all_derivations(repo: &Path) -> Result<PathBuf> {
         let inst_hdl: Vec<_> = (1..num_cpus::get())
             .map(|_| {
                 let rx = inst_rx.clone();
-                s.spawn(|_| instantiate_runner(repo, rx, &checkq))
+                s.spawn(|_| instantiate_runner(workdir, rx, &checkq))
             })
             .collect();
         drop(inst_rx);
@@ -242,6 +254,39 @@ pub fn all_derivations(repo: &Path) -> Result<PathBuf> {
     .unwrap()?;
     let (_, path) = outfile.keep()?;
     Ok(path)
+}
+
+// XXX implement
+#[allow(unused)]
+pub type Maintainers = HashMap<SmallString<[u8; 20]>, Maintainer>;
+
+#[allow(unused)]
+#[derive(Debug, Default, Deserialize)]
+pub struct Maintainer {
+    github: SmallString<[u8; 20]>,
+}
+
+#[allow(unused)]
+pub fn derive_maintainers(workdir: &Path) -> Result<Maintainers> {
+    let cap = Exec::cmd("nix-instantiate")
+        .args(&[
+            "<nixpkgs>",
+            "-A",
+            "lib.maintainers",
+            "--eval",
+            "--strict",
+            "--json",
+        ])
+        .env("NIX_PATH", "nixpkgs=.")
+        .cwd(workdir)
+        .stdout(Pipe)
+        .capture()?;
+    ensure!(
+        cap.success(),
+        "nix-instatiate failed with {:?}",
+        cap.exit_status
+    );
+    Ok(serde_json::from_slice(&cap.stdout)?)
 }
 
 #[cfg(test)]

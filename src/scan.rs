@@ -1,5 +1,6 @@
 use super::Opt;
 use crate::advisory::Advisory;
+use crate::nix::all_derivations;
 use crate::package::Package;
 
 use anyhow::{bail, ensure, Context, Result};
@@ -38,9 +39,9 @@ pub type ScanByBranch = HashMap<Branch, Vec<VulnixRes>>;
 #[derive(Debug, Clone, Default, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Branch {
     /// NixOS release name to publish in tickets
-    pub name: SmallString<[u8; 16]>,
+    pub name: SmallString<[u8; 20]>,
     /// git parseable revspec, usually a branch name
-    pub rev: SmallString<[u8; 16]>,
+    pub rev: SmallString<[u8; 20]>,
 }
 
 impl Branch {
@@ -53,8 +54,7 @@ impl Branch {
 
     pub fn checkout(&self, repo: &Path) -> Result<()> {
         info!(
-            "{} {} @ {}",
-            "* Checking out".green().bold(),
+            "Checking out {} @ {}",
             self.name.green().bold(),
             self.rev[0..11].yellow()
         );
@@ -73,8 +73,7 @@ impl Branch {
 
     /// Creates release derivation. Returns path to derivation file.
     pub fn instantiate(&self, repo: &Path) -> Result<PathBuf> {
-        info!("{}", "* Instantiating...".green());
-        crate::nix::all_derivations(repo)
+        all_derivations(repo)
     }
 
     /// Full path to JSON file containing vulnix scan results
@@ -112,6 +111,7 @@ impl Branch {
         fs::create_dir_all(&iterdir)
             .and_then(|_| fs::write(&fname, c.stdout))
             .with_context(|| format!("Cannot write output to {:?}", fname))?;
+        fs::remove_file(drvfile).ok();
         res
     }
 }
@@ -156,6 +156,7 @@ fn resolve_rev(rev: &str, repo: &Repository) -> Result<String> {
     Ok(repo.revparse_single(rev)?.id().to_string())
 }
 
+/// Enumerates inividual checkouts of the same repo which should be scanned in turn.
 #[derive(Default, Clone)]
 pub struct Branches {
     specs: Vec<Branch>,
@@ -195,7 +196,7 @@ impl Branches {
     pub fn load(&self, dir: &Path) -> Result<ScanByBranch> {
         info!(
             "Loading scan results from {}",
-            dir.display().to_string().yellow()
+            dir.to_string_lossy().green()
         );
         let mut sbb = ScanByBranch::new();
         for branch in self.iter() {
@@ -221,8 +222,8 @@ impl Branches {
         let mut sbb = ScanByBranch::new();
         for branch in self.iter() {
             branch.checkout(repo)?;
-            let drvfile = branch.instantiate(repo)?;
-            let scan = branch.vulnix(&drvfile, opt)?;
+            let paths = branch.instantiate(repo)?;
+            let scan = branch.vulnix(&paths, opt)?;
             sbb.insert(branch.clone(), scan);
         }
         Ok(sbb)

@@ -107,6 +107,7 @@ impl GitHub {
             }))
             .send()
             .await?
+            .error_for_status()?
             .text()
             .await?;
         serde_json::from_str(&res).map_err(|e| Error::API { res, e })
@@ -125,6 +126,7 @@ repo:{} is:open label:\"1.severity: security\" in:title \"Vulnerability roundup 
             .query(&[("q", query)])
             .send()
             .await?
+            .error_for_status()?
             .text()
             .await?;
         serde_json::from_str(&res).map_err(|e| Error::API { res, e })
@@ -140,6 +142,7 @@ repo:{} is:open label:\"1.severity: security\" in:title \"Vulnerability roundup 
             }))
             .send()
             .await?
+            .error_for_status()?
             .text()
             .await?;
         serde_json::from_str(&res).map_err(|e| Error::API { res, e })
