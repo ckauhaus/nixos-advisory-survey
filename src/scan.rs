@@ -1,6 +1,6 @@
 use super::Opt;
 use crate::advisory::Advisory;
-use crate::nix::all_derivations;
+use crate::nix;
 use crate::package::Package;
 
 use anyhow::{bail, ensure, Context, Result};
@@ -13,7 +13,9 @@ use smallstr::SmallString;
 use std::collections::HashMap;
 use std::fmt;
 use std::fs::{self, File};
+use std::io::Write;
 use std::ops::Deref;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use subprocess::Exec;
@@ -71,11 +73,6 @@ impl Branch {
         Ok(())
     }
 
-    /// Creates release derivation. Returns path to derivation file.
-    pub fn instantiate(&self, repo: &Path) -> Result<PathBuf> {
-        all_derivations(repo)
-    }
-
     /// Full path to JSON file containing vulnix scan results
     pub fn vulnix_json(&self, dir: &Path) -> PathBuf {
         dir.join(format!("vulnix.{}.json", self.name.as_str()))
@@ -84,12 +81,8 @@ impl Branch {
     /// Invokes `vulnix` on a derivation
     ///
     /// vulnix' output is saved to a JSON file iff parsing passed.
-    fn vulnix(&self, drvfile: &Path, opt: &Opt) -> Result<Vec<VulnixRes>> {
-        info!(
-            "{} {}",
-            "* Scanning derivations from".green(),
-            drvfile.display()
-        );
+    fn vulnix<P: AsRef<Path>>(&self, drvlist: P, opt: &Opt) -> Result<Vec<VulnixRes>> {
+        info!("Scanning derivations from {}", drvlist.as_ref().display());
         let full_wl = opt.whitelist_dir.join(format!("{}.toml", self.name));
         let cmd = Exec::cmd(&opt.vulnix)
             .args(&["-j", "-R", "-w"])
@@ -97,21 +90,21 @@ impl Branch {
             .arg("-W")
             .arg(&full_wl)
             .arg("-f")
-            .arg(drvfile);
+            .arg(drvlist.as_ref());
         debug!("{}", cmd.to_cmdline_lossy().purple());
         let c = cmd.capture().context("Failed to read stdout from vulnix")?;
         match c.exit_status {
             Exited(e) if e <= 2 => (),
             _ => bail!("vulnix failed with exit status {:?}", c.exit_status),
         }
-        let res = serde_json::from_slice(&c.stdout).context("vulnix JSON output parse error");
+        let res = serde_json::from_slice(&c.stdout)
+            .with_context(|| format!("Cannot parse vulnix JSON output: {:?}", &c.stdout));
         // save for future reference
         let iterdir = opt.iterdir();
         let fname = self.vulnix_json(&iterdir);
         fs::create_dir_all(&iterdir)
             .and_then(|_| fs::write(&fname, c.stdout))
             .with_context(|| format!("Cannot write output to {:?}", fname))?;
-        fs::remove_file(drvfile).ok();
         res
     }
 }
@@ -222,8 +215,19 @@ impl Branches {
         let mut sbb = ScanByBranch::new();
         for branch in self.iter() {
             branch.checkout(repo)?;
-            let paths = branch.instantiate(repo)?;
-            let scan = branch.vulnix(&paths, opt)?;
+            let attrs = nix::all_derivations(repo)?;
+            let mut drvlist = tempfile::Builder::new()
+                .prefix("vulnix-scan-drv.")
+                .tempfile()?;
+            for drv in attrs.values().map(|e| &e.drv) {
+                drvlist.write_all(drv.as_os_str().as_bytes())?;
+                drvlist.write_all(b"\n")?;
+            }
+            nix::ensure_drvs_exist(repo, &attrs)?;
+            drvlist.flush()?;
+            let (_f, drvlist) = drvlist.keep()?;
+            let scan = branch.vulnix(&drvlist, opt)?;
+            fs::remove_file(&drvlist).ok();
             sbb.insert(branch.clone(), scan);
         }
         Ok(sbb)
@@ -321,7 +325,9 @@ mod test {
             .join("fixtures/iterations/1/vulnix.nixos-18.09.json");
         let exp: Vec<VulnixRes> =
             serde_json::from_str(&read_to_string(&orig_json).unwrap()).unwrap();
-        let res = br("nixos-18.09").vulnix(Path::new("result"), &opt).unwrap();
+        let res = br("nixos-18.09")
+            .vulnix(PathBuf::from("result"), &opt)
+            .unwrap();
         assert_eq!(res, exp);
         // see if vulnix() saved original output
         assert_eq!(

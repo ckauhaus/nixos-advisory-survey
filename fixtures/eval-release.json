@@ -1,0 +1,88 @@
+{
+  "AAAAAASomeThingsFailToEvaluate": {
+    "recurseForDerivations": true
+  },
+  "AMB-plugins": {
+    "aarch64-linux": {
+      "drvPath": "/nix/store/kd0c1ra7s34r1pb2dsdhmcbpkm3yxiw5-AMB-plugins-0.8.1.drv",
+      "name": "AMB-plugins-0.8.1"
+    },
+    "recurseForDerivations": true,
+    "x86_64-linux": {
+      "drvPath": "/nix/store/hcpm7hwmn0xqaz2dr0sf7xnqscy7i2ar-AMB-plugins-0.8.1.drv",
+      "name": "AMB-plugins-0.8.1"
+    }
+  },
+  "AgdaSheaves": {
+    "aarch64-linux": {},
+    "recurseForDerivations": true,
+    "x86_64-darwin": {},
+    "x86_64-linux": {}
+  },
+  "AgdaStdlib": {
+    "aarch64-linux": {
+      "drvPath": "/nix/store/fzfx5jx6spvx9ylpm3nymiyvk50yzhky-agda-stdlib-1.1.drv",
+      "name": "agda-stdlib"
+    },
+    "recurseForDerivations": true,
+    "x86_64-darwin": {
+      "drvPath": "/nix/store/m298jqbz175gjalha6r7z60fcjmy98lb-agda-stdlib-1.1.drv",
+      "name": "agda-stdlib"
+    },
+    "x86_64-linux": {
+      "drvPath": "/nix/store/83066my9b48ry8g44my8kr9l8iqwzajm-agda-stdlib-1.1.drv",
+      "name": "agda-stdlib"
+    }
+  },
+  "CoinMP": {
+    "aarch64-linux": {
+      "drvPath": "/nix/store/yyg2hmah34wy089k9z497x1zjn3ybzy6-CoinMP-1.8.4.drv",
+      "name": "CoinMP-1.8.4"
+    },
+    "recurseForDerivations": true,
+    "x86_64-darwin": {
+      "drvPath": "/nix/store/4dsmljnqqipyj9zp05gjfs8cwsij7y16-CoinMP-1.8.4.drv",
+      "name": "CoinMP-1.8.4"
+    },
+    "x86_64-linux": {
+      "drvPath": "/nix/store/v92akqqn6acdcixqpdc7y0gxnmk1dlax-CoinMP-1.8.4.drv",
+      "name": "CoinMP-1.8.4"
+    }
+  },
+  "EBTKS": {
+    "aarch64-linux": {
+      "drvPath": "/nix/store/d422ygfbgl50vx5gyxmhasbjjykbxpw6-EBTKS-2017-09-23.drv",
+      "name": "EBTKS-2017-09-23"
+    },
+    "recurseForDerivations": true,
+    "x86_64-darwin": {
+      "drvPath": "/nix/store/xazxnsv68n3prn93lkyp8s0k7zdh66x1-EBTKS-2017-09-23.drv",
+      "name": "EBTKS-2017-09-23"
+    },
+    "x86_64-linux": {
+      "drvPath": "/nix/store/35gd8h8r7wysvapy7hpfh44fg88693aq-EBTKS-2017-09-23.drv",
+      "name": "EBTKS-2017-09-23"
+    }
+  },
+  "EmptyEpsilon": {
+    "aarch64-linux": {
+      "drvPath": "/nix/store/jg3yb1h2466fcp4mh58mh1badvlh6g17-empty-epsilon-2020.04.09.drv",
+      "name": "empty-epsilon-2020.04.09"
+    },
+    "recurseForDerivations": true,
+    "x86_64-linux": {
+      "drvPath": "/nix/store/k47jnzwnjmscxyc7qymc8crb1gi61zw6-empty-epsilon-2020.04.09.drv",
+      "name": "empty-epsilon-2020.04.09"
+    }
+  },
+  "recurseForDerivations": true,
+  "recurseIntoAttrs": {
+    "recurseForDerivations": true
+  },
+  "androidStudioPackages": {
+    "beta": {
+      "recurseForDerivations": true,
+      "x86_64-linux": {}
+    }
+  }
+}
