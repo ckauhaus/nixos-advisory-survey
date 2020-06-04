@@ -97,13 +97,17 @@ impl GitHub {
     }
 
     async fn create(&self, tkt: &Ticket) -> Result<Issue> {
+        let mut labels = vec!["1.severity: security"];
+        if tkt.max_score().into_iter().any(|s| *s >= 7.5) {
+            labels.push("CVSS_HIGH");
+        }
         let res = self
             .client
             .post(&self.url_for.issues)
             .json(&json!({
                 "title": tkt.summary(),
                 "body": tkt.to_string(),
-                "labels": &["1.severity: security"]
+                "labels": labels
             }))
             .send()
             .await?

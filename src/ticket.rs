@@ -3,7 +3,7 @@ use crate::package::Package;
 use crate::scan::{Branch, ScanByBranch, ScoreMap};
 
 use colored::*;
-use float_ord::FloatOrd;
+use ordered_float::OrderedFloat;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fmt;
@@ -73,6 +73,11 @@ impl Ticket {
             self.iteration, self.pkg.name, num, advisory
         )
     }
+
+    /// Maximum CVSS score over listed CVEs
+    pub fn max_score(&self) -> Option<OrderedFloat<f32>> {
+        self.affected.values().filter_map(|d| d.score).max()
+    }
 }
 
 impl fmt::Display for Ticket {
@@ -123,13 +128,13 @@ impl fmt::Display for Ticket {
 #[derive(Debug, Clone, Default, PartialEq, PartialOrd)]
 pub struct Detail {
     branches: Vec<Branch>,
-    score: Option<f32>,
+    score: Option<OrderedFloat<f32>>,
 }
 
 impl Detail {
     fn new(score: Option<f32>) -> Self {
         Self {
-            score,
+            score: score.map(|s| OrderedFloat(s)),
             ..Default::default()
         }
     }
@@ -150,8 +155,8 @@ impl fmt::Display for Detail {
 }
 
 fn cmp_score(a: &(&Advisory, &Detail), b: &(&Advisory, &Detail)) -> Ordering {
-    let left = FloatOrd(a.1.score.unwrap_or(-1.0));
-    let right = FloatOrd(b.1.score.unwrap_or(-1.0));
+    let left = a.1.score.unwrap_or(OrderedFloat(-1.0));
+    let right = b.1.score.unwrap_or(OrderedFloat(-1.0));
     match left.cmp(&right) {
         Ordering::Greater => Ordering::Less,
         Ordering::Less => Ordering::Greater,
@@ -200,11 +205,18 @@ mod test {
     use crate::tests::{adv, create_branches, pkg};
     use maplit::hashmap;
 
-    /// Helper for quick construction of Detail structs
+    /// Helpers for quick construction of Detail structs
     fn det(branches: &[&str], score: Option<f32>) -> Detail {
         Detail {
             branches: branches.iter().map(|&b| Branch::new(b)).collect(),
-            score,
+            ..Detail::new(score)
+        }
+    }
+
+    fn det_br(branches: &[&Branch], score: Option<f32>) -> Detail {
+        Detail {
+            branches: branches.iter().map(|&b| b.clone()).collect(),
+            ..Detail::new(score)
         }
     }
 
@@ -291,9 +303,9 @@ mod test {
             iteration: 2,
             pkg: pkg("libtiff-4.0.9"),
             affected: hashmap! {
-                adv("CVE-2018-17000") => Detail { branches: vec![br[0].clone()], score: None },
-                adv("CVE-2018-17100") => Detail { branches: vec![br[0].clone()], score: Some(8.7) },
-                adv("CVE-2018-17101") => Detail { branches: vec![br[0].clone(), br[1].clone()], score: Some(8.8) },
+                adv("CVE-2018-17000") => det_br(&[&br[0]], None),
+                adv("CVE-2018-17100") => det_br(&[&br[0]], Some(8.7)),
+                adv("CVE-2018-17101") => det_br(&[&br[0], &br[1]], Some(8.8)),
             },
             ..Ticket::default()
         };
@@ -325,9 +337,7 @@ May contain false positives.\n\
         let tkt = Ticket {
             iteration: 1,
             pkg: pkg("libtiff-4.0.9"),
-            affected: hashmap! {
-                adv("CVE-2018-17100") => Detail { branches: vec![br[0].clone()], score: Some(8.8) }
-            },
+            affected: hashmap! { adv("CVE-2018-17100") => det_br(&[&br[0]], Some(8.8)) },
             ..Ticket::default()
         };
         assert!(
@@ -367,5 +377,24 @@ May contain false positives.\n\
             ),
             Ordering::Greater
         );
+    }
+
+    #[test]
+    fn max_score() {
+        let tkt = Ticket {
+            affected: hashmap! { adv("CVE-2018-17100") => det(&[], None) },
+            ..Ticket::default()
+        };
+        assert!(tkt.max_score().is_none());
+
+        let tkt = Ticket {
+            affected: hashmap! {
+                adv("CVE-2018-17100") => det(&[], None),
+                adv("CVE-2020-12755") => det(&[], Some(3.3)),
+                adv("CVE-2020-12767") => det(&[], Some(9.8)),
+            },
+            ..Ticket::default()
+        };
+        assert_eq!(tkt.max_score().unwrap().into_inner(), 9.8);
     }
 }

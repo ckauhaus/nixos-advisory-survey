@@ -1,19 +1,9 @@
-{ changedattrsjson, changedpathsjson }:
+{ changedattrsjson }:
+
 let
   pkgs = import ./. {};
 
   changedattrs = builtins.fromJSON (builtins.readFile changedattrsjson);
-  changedpaths = builtins.fromJSON (builtins.readFile changedpathsjson);
-
-  anyMatchingFile = filename:
-    let
-      matching = builtins.filter
-        (changed: pkgs.lib.strings.hasSuffix changed filename)
-        changedpaths;
-    in (builtins.length matching) > 0;
-
-  anyMatchingFiles = files:
-    (builtins.length (builtins.filter anyMatchingFile files)) > 0;
 
   enrichedAttrs = builtins.map
     (path: {
@@ -47,61 +37,28 @@ let
     )
     attrsWithMaintainers;
 
-  relevantFilenames = drv:
-    (pkgs.lib.lists.unique
-      (builtins.map
-        (pos: pos.file)
-        (builtins.filter (x: x != null)
-          [
-            (builtins.unsafeGetAttrPos "maintainers" (drv.meta or {}))
-            (builtins.unsafeGetAttrPos "src" drv)
-            # broken because name is always set by stdenv:
-            #    # A hack to make `nix-env -qa` and `nix search` ignore broken packages.
-            #    # TODO(@oxij): remove this assert when something like NixOS/nix#1771 gets merged into nix.
-            #    name = assert validity.handled; name + lib.optionalString
-            #(builtins.unsafeGetAttrPos "name" drv)
-            (builtins.unsafeGetAttrPos "pname" drv)
-            (builtins.unsafeGetAttrPos "version" drv)
-          ]
-        )));
-
-  attrsWithFilenames = builtins.map
-    (pkg: pkg // { filenames = relevantFilenames pkg.package; })
-    attrsWithMaintainers;
-
-  attrsWithModifiedFiles = builtins.filter
-    (pkg: anyMatchingFiles pkg.filenames)
-    attrsWithFilenames;
-
   listToPing = pkgs.lib.lists.flatten
     (builtins.map
       (pkg:
         builtins.map (maintainer: {
           handle = pkgs.lib.toLower maintainer.github;
-          packageName = pkg.name;
-          dueToFiles = pkg.filenames;
+          pkgName = pkg.name;
         })
         pkg.maintainers
       )
-      attrsWithModifiedFiles);
+      attrsWithMaintainers);
 
   byMaintainer = pkgs.lib.lists.foldr
-    (ping: collector: collector // { "${ping.handle}" = [ { inherit (ping) packageName dueToFiles; } ] ++ (collector."${ping.handle}" or []); })
+    (ping: collector: collector // {
+      "${ping.handle}" = [ { inherit (ping) pkgName; } ] ++ (collector."${ping.handle}" or []);
+    })
     {}
     listToPing;
 
-  textForPackages = packages:
-    pkgs.lib.strings.concatStringsSep ", " (
-      builtins.map (pkg: pkg.packageName)
-      packages);
-
-  textPerMaintainer = pkgs.lib.attrsets.mapAttrs
-    (maintainer: packages: "- @${maintainer} for ${textForPackages packages}")
-    byMaintainer;
-
   packagesPerMaintainer = pkgs.lib.attrsets.mapAttrs
     (maintainer: packages:
-      builtins.map (pkg: pkg.packageName)
+      builtins.map (pkg: pkg.pkgName)
       packages)
     byMaintainer;
-in packagesPerMaintainer
+
+in listToPing

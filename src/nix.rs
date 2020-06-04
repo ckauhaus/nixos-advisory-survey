@@ -135,14 +135,14 @@ pub fn all_derivations(workdir: &Path) -> Result<ByAttr> {
 }
 
 pub fn ensure_drvs_exist(workdir: &Path, drvs: &ByAttr) -> Result<usize> {
-    let inst = drvs
-        .iter()
-        .filter(|(_, e)| !e.drv.exists())
-        .collect::<Vec<_>>();
-    debug!("{} drvs don't exist yet, instantiating", inst.len());
-    let res = inst
+    let todo: Vec<_> = drvs.iter().filter(|(_, e)| !e.drv.exists()).collect();
+    info!(
+        "{} drvs don't exist yet, instantiating",
+        todo.len().to_string().yellow()
+    );
+    let res = todo
         .into_par_iter()
-        .chunks(100)
+        .chunks(50)
         .map(|attrs| {
             let mut cmd = Command::new("nix-instantiate");
             cmd.arg("<nixpkgs>")
@@ -155,9 +155,9 @@ pub fn ensure_drvs_exist(workdir: &Path, drvs: &ByAttr) -> Result<usize> {
             cmd.output()
         })
         .collect::<Result<Vec<process::Output>, _>>()
-        .context("Error while executing nix-instantiate")?;
+        .context("Errors while executing nix-instantiate")?;
     for out in &res {
-        ensure!(out.status.success(), "errors while instantiating {:?}", out);
+        ensure!(out.status.success(), "Error while instantiating {:?}", out);
     }
     Ok(res.len())
 }
