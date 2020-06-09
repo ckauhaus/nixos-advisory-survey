@@ -62,3 +62,15 @@ let
     byMaintainer;
 
 in listToPing
+
+# Example output:
+# [
+#   {
+#     "handle": "ckauhaus",
+#     "pkgName": "vulnix"
+#   },
+#   {
+#     "handle": "edolstra",
+#     "pkgName": "hello"
+#   }
+# ]

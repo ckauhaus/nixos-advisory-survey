@@ -1,4 +1,4 @@
-use crate::package::VERSION_SPLIT;
+use crate::package::{Maintainer, Package, VERSION_SPLIT};
 
 use anyhow::{bail, ensure, Context, Result};
 use colored::*;
@@ -8,62 +8,35 @@ use serde_json::Value;
 use smallstr::SmallString;
 use std::collections::HashMap;
 use std::env;
-use std::fs::{remove_file, File};
+use std::fs::File;
+use std::io::{BufWriter, Write};
 use std::ops::Deref;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::{self, Command};
 use std::str;
 use subprocess::Exec;
+use tempfile::TempPath;
 
 pub type Attr = SmallString<[u8; 20]>;
-pub type DrvName = SmallString<[u8; 20]>;
 pub type DrvPath = PathBuf;
 
 #[derive(Debug, Default, Deserialize, PartialEq, Eq, Clone)]
 #[serde(default)]
 pub struct Eval {
-    pub name: DrvName,
+    pub name: Package,
     #[serde(rename = "drvPath")]
     pub drv: DrvPath,
 }
 
 impl Eval {
     #[allow(unused)]
-    pub fn new<S: AsRef<str>, D: AsRef<Path>>(name: S, drv: D) -> Self {
+    pub fn new<D: AsRef<Path>>(name: &str, drv: D) -> Self {
         Self {
-            name: SmallString::from(name.as_ref()),
+            name: name.parse().unwrap(),
             drv: DrvPath::from(drv.as_ref()),
         }
     }
-}
-
-fn instantiate(workdir: &Path) -> Result<PathBuf> {
-    let (f, tmp) = tempfile::Builder::new()
-        .prefix("eval-release.")
-        .tempfile()?
-        .keep()?;
-    let cap = Exec::cmd("nix-instantiate")
-        .args(&[
-            "--strict",
-            "--eval-only",
-            "--json",
-            "maintainers/scripts/eval-release.nix",
-        ])
-        .env(
-            "GC_INITIAL_HEAP_SIZE",
-            env::var("GC_INITIAL_HEAP_SIZE").unwrap_or_else(|_| "2_000_000_000".to_owned()),
-        )
-        .env("NIX_PATH", "nixpkgs=.")
-        .cwd(workdir)
-        .stdout(f)
-        .capture()
-        .context("Failed to spawn nix-instatiate")?;
-    ensure!(
-        cap.success(),
-        "nix-instatiate failed with {:?}",
-        cap.exit_status
-    );
-    Ok(tmp)
 }
 
 #[derive(Debug, Default, PartialEq, Eq, Clone)]
@@ -85,7 +58,7 @@ impl ByAttr {
                         match (arch, attrs) {
                             (arch, obj @ Value::Object(_)) if arch == "x86_64-linux" => {
                                 if let Ok(eval) = serde_json::from_value::<Eval>(obj) {
-                                    if VERSION_SPLIT.is_match(&eval.name) {
+                                    if VERSION_SPLIT.is_match(&eval.name.as_str()) {
                                         by_attr.insert(Attr::from_str(&attr), eval);
                                     }
                                 }
@@ -100,6 +73,30 @@ impl ByAttr {
             bail!("Expected hash in nix-instantiate output, got {:?}", &json);
         }
     }
+
+    /// Write all derivation paths into a temporary file. It is the caller's duty to delete the
+    /// file after use.
+    pub fn dump_drvlist(&self) -> Result<TempPath> {
+        let (f, drvlist) = tempfile::Builder::new()
+            .prefix("drvlist.")
+            .tempfile()?
+            .into_parts();
+        let mut w = BufWriter::new(f);
+        for drv in self.values().map(|e| &e.drv) {
+            w.write_all(drv.as_os_str().as_bytes())?;
+            w.write_all(b"\n")?;
+        }
+        w.flush()?;
+        Ok(drvlist)
+    }
+
+    pub fn intersect_pkgs(&self, pkgs: &[&Package]) -> Self {
+        let mut res = HashMap::new();
+        for (a, e) in self.iter().filter(|(_, e)| pkgs.contains(&&e.name)) {
+            res.insert(a.clone(), e.clone());
+        }
+        Self(res)
+    }
 }
 
 impl Deref for ByAttr {
@@ -109,33 +106,59 @@ impl Deref for ByAttr {
     }
 }
 
+fn instantiate(workdir: &Path) -> Result<TempPath> {
+    let (f, tmp) = tempfile::Builder::new()
+        .prefix("eval-release.")
+        .tempfile()?
+        .into_parts();
+    let cap = Exec::cmd("nix-instantiate")
+        .args(&[
+            "--strict",
+            "--eval-only",
+            "--json",
+            "maintainers/scripts/eval-release.nix",
+        ])
+        .env(
+            "GC_INITIAL_HEAP_SIZE",
+            env::var("GC_INITIAL_HEAP_SIZE").unwrap_or_else(|_| "2_000_000_000".to_owned()),
+        )
+        .env("NIX_PATH", "nixpkgs=.")
+        .cwd(workdir)
+        .stdout(f)
+        .capture()
+        .context("Failed to spawn 'nix-instatiate eval-release.nix'")?;
+    ensure!(
+        cap.success(),
+        "nix-instatiate failed with {:?}",
+        cap.exit_status
+    );
+    Ok(tmp)
+}
+
 /// Recursively expand all drvs starting from nixos/release-combined.nix by inspecting direct
 /// dependencies and Hydra aggregates
 ///
 /// - workdir: nixpkgs dir with checked out branch
-///
-/// # Returns
-///
-/// Temporary file containing all recusively expanded derivation paths. File can be deleted after
-/// vulnix invocation.
 pub fn all_derivations(workdir: &Path) -> Result<ByAttr> {
     info!(
-        "Instantiating derivations in {} - this may take a while",
+        "Querying all packages in {} - this may take a while",
         workdir.to_string_lossy().green()
     );
     let tmp = instantiate(workdir)?;
     let res = ByAttr::parse_instantiation(&tmp).with_context(|| {
         format!(
             "Failed to parse nix-instantiate output (retained in {:?})",
-            &tmp
+            tmp.keep().unwrap()
         )
     })?;
-    remove_file(&tmp)?;
     Ok(res)
 }
 
 pub fn ensure_drvs_exist(workdir: &Path, drvs: &ByAttr) -> Result<usize> {
     let todo: Vec<_> = drvs.iter().filter(|(_, e)| !e.drv.exists()).collect();
+    if todo.is_empty() {
+        return Ok(0);
+    }
     info!(
         "{} drvs don't exist yet, instantiating",
         todo.len().to_string().yellow()
@@ -160,6 +183,41 @@ pub fn ensure_drvs_exist(workdir: &Path, drvs: &ByAttr) -> Result<usize> {
         ensure!(out.status.success(), "Error while instantiating {:?}", out);
     }
     Ok(res.len())
+}
+
+#[derive(Debug, Default, Deserialize, PartialEq, Eq, Clone)]
+#[serde(default)]
+pub struct Ping {
+    pub handle: Maintainer,
+    #[serde(rename = "pkgName")]
+    pub package: Attr,
+}
+
+/// Query lists of maintainers for a given iter of package attributes (not names!).
+pub fn maintainers<'a>(
+    workdir: &'_ Path,
+    relevant_pkgs: impl Iterator<Item = &'a Attr>,
+) -> Result<Vec<Ping>> {
+    let attrs: Vec<Vec<&Attr>> = relevant_pkgs.map(|p| vec![p]).collect();
+    let changedattrs = tempfile::Builder::new().prefix("changedattrs").tempfile()?;
+    serde_json::to_writer(&changedattrs, &attrs)
+        .with_context(|| format!("Failed to write temp file {:?}", changedattrs))?;
+    let cap = Exec::cmd("nix-instantiate")
+        .args(&[
+            "--strict",
+            "--eval-only",
+            "--json",
+            "-E",
+            include_str!("maintainers.nix"),
+            "--arg",
+            "changedattrsjson",
+        ])
+        .arg(changedattrs.path())
+        .env("NIX_PATH", "nixpkgs=.")
+        .cwd(workdir)
+        .capture()
+        .context("Failed to spawn nix-instatiate")?;
+    Ok(serde_json::from_slice(&cap.stdout).context("Cannot parse maintainers.nix output")?)
 }
 
 #[cfg(test)]

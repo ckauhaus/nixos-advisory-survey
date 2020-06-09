@@ -10,7 +10,7 @@ mod tests;
 mod ticket;
 mod tracker;
 
-use crate::scan::{Branch, Branches};
+use crate::scan::{Branch, Branches, MaintByBranch};
 use crate::ticket::Ticket;
 use crate::tracker::Tracker;
 
@@ -79,6 +79,9 @@ pub struct Opt {
     /// Alternatively set the GITHUB_TOKEN environment variable
     #[structopt(short, long, env = "GITHUB_TOKEN")]
     github_token: Option<String>,
+    /// Ping package maintainers
+    #[structopt(short = "m", long)]
+    ping_maintainers: bool,
     /// Nth survey iteration
     #[structopt(value_name = "N")]
     iteration: u32,
@@ -94,6 +97,16 @@ impl Opt {
     /// Constructs per-iteration directory from basedir and iteration number
     pub fn iterdir(&self) -> PathBuf {
         self.basedir.join(self.iteration.to_string())
+    }
+
+    /// Full path to JSON file containing maintainers
+    fn maint_json(&self, branch: &str) -> PathBuf {
+        self.iterdir().join(format!("maintainers.{}.json", branch))
+    }
+
+    /// Full path to JSON file containing vulnix scan results
+    fn vulnix_json(&self, branch: &str) -> PathBuf {
+        self.iterdir().join(format!("vulnix.{}.json", branch))
     }
 }
 
@@ -137,13 +150,21 @@ fn run() -> Result<()> {
         ),
         (_, _) => Box::new(tracker::Null::new()),
     };
-    let scan_res = if opt.no_run {
-        branches.load(&dir)?
+    let (sbb, mbb) = if opt.no_run {
+        branches.load(&opt)?
     } else {
         branches.scan(&opt)?
     };
     Runtime::new().unwrap().block_on(issues(
-        ticket::ticket_list(opt.iteration, scan_res),
+        ticket::ticket_list(
+            opt.iteration,
+            sbb,
+            if opt.ping_maintainers {
+                mbb
+            } else {
+                MaintByBranch::default()
+            },
+        ),
         &dir,
         tracker.borrow(),
     ))?;

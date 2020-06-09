@@ -1,6 +1,6 @@
 use crate::advisory::Advisory;
-use crate::package::Package;
-use crate::scan::{Branch, ScanByBranch, ScoreMap};
+use crate::package::{Maintainer, Package};
+use crate::scan::{Branch, MaintByBranch, ScanByBranch, ScoreMap};
 
 use colored::*;
 use ordered_float::OrderedFloat;
@@ -20,6 +20,7 @@ pub struct Ticket {
     pub affected: HashMap<Advisory, Detail>,
     pub issue_id: Option<u64>,
     pub issue_url: Option<String>,
+    pub maintainers: Vec<Maintainer>,
 }
 
 impl Ticket {
@@ -118,6 +119,9 @@ impl fmt::Display for Ticket {
             "\nScanned versions: {}. May contain false positives.",
             relevant.join("; ")
         )?;
+        if !self.maintainers.is_empty() {
+            writeln!(f, "\nCc {}", self.maintainers.join(", "))?;
+        }
         for url in &self.issue_url {
             writeln!(f, "\n<!-- {} -->", url)?;
         }
@@ -165,18 +169,23 @@ fn cmp_score(a: &(&Advisory, &Detail), b: &(&Advisory, &Detail)) -> Ordering {
 }
 
 /// One ticket per package, containing scan results for all branches
-pub fn ticket_list(iteration: u32, mut scan_by_branch: ScanByBranch) -> Vec<Ticket> {
+pub fn ticket_list(
+    iteration: u32,
+    scan_res: ScanByBranch,
+    maintainers: MaintByBranch,
+) -> Vec<Ticket> {
     let mut scores = ScoreMap::default();
     // Step 1: for each pkgs, list all pairs (advisory, branch) in random order
     let mut pkgmap: HashMap<Package, Vec<(Advisory, Branch)>> = HashMap::new();
-    for (branch, scan_results) in scan_by_branch.drain() {
+    for (branch, scan_results) in scan_res {
         for res in scan_results {
             let e = pkgmap.entry(res.pkg).or_insert_with(Vec::new);
             e.extend(res.affected_by.into_iter().map(|adv| (adv, branch.clone())));
             scores.extend(&res.cvssv3_basescore);
         }
     }
-    // Step 2: consolidate branches
+    // XXX Step 2: consolidate maintainers
+    // Step 3: consolidate branches
     let mut tickets: Vec<Ticket> = pkgmap
         .into_iter()
         .map(|(pkg, mut adv)| {
@@ -220,6 +229,10 @@ mod test {
         }
     }
 
+    fn nomaint() -> MaintByBranch {
+        MaintByBranch::default()
+    }
+
     #[test]
     fn decode_scan_single_branch() {
         let scan = hashmap! {
@@ -240,7 +253,7 @@ mod test {
             ]
         };
         assert_eq!(
-            ticket_list(1, scan),
+            ticket_list(1, scan, nomaint()),
             &[
                 Ticket {
                     iteration: 1,
@@ -280,7 +293,7 @@ mod test {
             }],
         };
         assert_eq!(
-            ticket_list(2, scan),
+            ticket_list(2, scan, nomaint()),
             &[Ticket {
                 iteration: 2,
                 pkg: pkg("libtiff-4.0.9"),
