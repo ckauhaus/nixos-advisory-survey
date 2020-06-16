@@ -3,24 +3,28 @@
   "name": "binutils-2.30",
   "pname": "binutils",
   "version": "2.30",
+  "derivation": "/nix/store/m0x21lpp0r4mcqkqilpxhgpalsbr1mp2-binutils-wrapper-2.30.drv",
   "affected_by": ["CVE-2018-7569"]
  },
  {
   "name": "libtasn1-4.13",
   "pname": "libtasn1",
   "version": "4.13",
+  "derivation": "/nix/store/g9r1w6bfsnlbpadj0scyxmx2h6bqk9ga-libtasn1-4.13.drv",
   "affected_by": ["CVE-2018-1000654"]
  },
  {
   "name": "ncurses-6.1",
   "pname": "ncurses",
   "version": "6.1",
+  "derivation": "/nix/store/g9cqz91g6q1fmxyzi10f1ghkgi3xjyp4-ncurses-6.1-20190112.drv",
   "affected_by": ["CVE-2018-10754"]
  },
  {
   "name": "openjpeg-2.3.0",
   "pname": "openjpeg",
   "version": "2.3.0",
+  "derivation": "/nix/store/230vpq69xfm5c0js7k5mxcxi39cn2ja4-openjpeg-2.3.0.drv",
   "affected_by": ["CVE-2018-16376"]
  }
 ]

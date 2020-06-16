@@ -1,6 +1,6 @@
 use crate::advisory::Advisory;
 use crate::package::{Maintainer, Package};
-use crate::scan::{Branch, MaintByBranch, ScanByBranch, ScoreMap};
+use crate::scan::{Branch, ScanByBranch, ScoreMap};
 
 use colored::*;
 use ordered_float::OrderedFloat;
@@ -13,6 +13,9 @@ use std::io::BufWriter;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+/// Abstract ticket/issue representation.
+///
+/// This will be picked up by tracker/* to create a concrete issue.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Ticket {
     pub iteration: u32,
@@ -60,8 +63,7 @@ impl Ticket {
             inum,
             self.file_name().to_string_lossy().green()
         );
-        let mut f = BufWriter::new(fs::File::create(file_name)?);
-        write!(f, "{:#}", self)?;
+        write!(BufWriter::new(fs::File::create(file_name)?), "{:#}", self)?;
         Ok(())
     }
 
@@ -69,9 +71,13 @@ impl Ticket {
     pub fn summary(&self) -> String {
         let num = self.affected.len();
         let advisory = if num == 1 { "advisory" } else { "advisories" };
+        let max_cvss = self
+            .max_score()
+            .map(|s| format!(" [{}]", s))
+            .unwrap_or_default();
         format!(
-            "Vulnerability roundup {}: {}: {} {}",
-            self.iteration, self.pkg.name, num, advisory
+            "Vulnerability roundup {}: {}: {} {}{}",
+            self.iteration, self.pkg.name, num, advisory, max_cvss
         )
     }
 
@@ -116,14 +122,14 @@ impl fmt::Display for Ticket {
         relevant.dedup();
         writeln!(
             f,
-            "\nScanned versions: {}. May contain false positives.",
+            "\nScanned versions: {}. May contain false positives.\n",
             relevant.join("; ")
         )?;
-        if !self.maintainers.is_empty() {
-            writeln!(f, "\nCc {}", self.maintainers.join(", "))?;
+        for m in &self.maintainers {
+            writeln!(f, "Cc @{}", m)?;
         }
-        for url in &self.issue_url {
-            writeln!(f, "\n<!-- {} -->", url)?;
+        if let Some(url) = &self.issue_url {
+            writeln!(f, "<!-- {} -->", url)?;
         }
         Ok(())
     }
@@ -164,39 +170,47 @@ fn cmp_score(a: &(&Advisory, &Detail), b: &(&Advisory, &Detail)) -> Ordering {
     match left.cmp(&right) {
         Ordering::Greater => Ordering::Less,
         Ordering::Less => Ordering::Greater,
-        Ordering::Equal => a.0.cmp(&b.0),
+        Ordering::Equal => a.0.partial_cmp(&b.0).unwrap_or(Ordering::Equal),
     }
 }
 
 /// One ticket per package, containing scan results for all branches
-pub fn ticket_list(
-    iteration: u32,
-    scan_res: ScanByBranch,
-    maintainers: MaintByBranch,
-) -> Vec<Ticket> {
+pub fn ticket_list(iteration: u32, scan_res: ScanByBranch, ping_maintainers: bool) -> Vec<Ticket> {
     let mut scores = ScoreMap::default();
-    // Step 1: for each pkgs, list all pairs (advisory, branch) in random order
+    let mut maintmap: HashMap<Package, Vec<Maintainer>> = HashMap::new();
+    // Step 1: for each pkg, list all pairs (advisory, branch) in random order
     let mut pkgmap: HashMap<Package, Vec<(Advisory, Branch)>> = HashMap::new();
     for (branch, scan_results) in scan_res {
         for res in scan_results {
+            if ping_maintainers {
+                if let Some(e) = maintmap.get_mut(&res.pkg) {
+                    e.extend(res.maintainers);
+                } else {
+                    maintmap.insert(res.pkg.clone(), res.maintainers.clone());
+                }
+            }
             let e = pkgmap.entry(res.pkg).or_insert_with(Vec::new);
             e.extend(res.affected_by.into_iter().map(|adv| (adv, branch.clone())));
-            scores.extend(&res.cvssv3_basescore);
+            scores.extend(res.cvssv3_basescore);
         }
     }
-    // XXX Step 2: consolidate maintainers
-    // Step 3: consolidate branches
+    // Step 2: consolidate branches
     let mut tickets: Vec<Ticket> = pkgmap
         .into_iter()
-        .map(|(pkg, mut adv)| {
-            adv.sort(); // especially needed to get branch ordering right
+        .map(|(pkg, mut advbr)| {
+            advbr.sort_unstable();
             let mut t = Ticket::new(iteration, pkg);
-            for (advisory, branch) in adv {
+            for (advisory, branch) in advbr {
                 let score = scores.get(&advisory);
                 t.affected
                     .entry(advisory)
                     .or_insert_with(|| Detail::new(score.cloned()))
                     .add(branch)
+            }
+            if let Some(maintainers) = maintmap.remove(&t.pkg) {
+                t.maintainers = maintainers;
+                t.maintainers.sort();
+                t.maintainers.dedup();
             }
             t
         })
@@ -211,7 +225,7 @@ pub fn ticket_list(
 mod test {
     use super::*;
     use crate::scan::VulnixRes;
-    use crate::tests::{adv, create_branches, pkg};
+    use crate::tests::{adv, br, create_branches, pkg};
     use maplit::hashmap;
 
     /// Helpers for quick construction of Detail structs
@@ -229,31 +243,17 @@ mod test {
         }
     }
 
-    fn nomaint() -> MaintByBranch {
-        MaintByBranch::default()
-    }
-
     #[test]
     fn decode_scan_single_branch() {
         let scan = hashmap! {
             Branch::new("br1") => vec![
-                VulnixRes {
-                    pkg: pkg("ncurses-6.1"),
-                    affected_by: vec![adv("CVE-2018-10754")],
-                    .. Default::default()
-                },
-                VulnixRes {
-                    pkg: pkg("libtiff-4.0.9"),
-                    affected_by: vec![
-                        adv("CVE-2018-17000"),
-                        adv("CVE-2018-17100"),
-                        adv("CVE-2018-17101")],
-                    .. Default::default()
-                },
+                VulnixRes::new(pkg("ncurses-6.1"), vec![adv("CVE-2018-10754")]),
+                VulnixRes::new(pkg("libtiff-4.0.9"), vec![
+                    adv("CVE-2018-17000"), adv("CVE-2018-17100"), adv("CVE-2018-17101")])
             ]
         };
         assert_eq!(
-            ticket_list(1, scan, nomaint()),
+            ticket_list(1, scan, false),
             &[
                 Ticket {
                     iteration: 1,
@@ -285,15 +285,17 @@ mod test {
                     adv("CVE-2018-17100") => 8.8,
                     adv("CVE-2018-17101") => 8.7,
                 },
+                ..VulnixRes::default()
             }],
             Branch::new("br2") => vec![VulnixRes {
                 pkg: pkg("libtiff-4.0.9"),
                 affected_by: vec![adv("CVE-2018-17101")],
-                cvssv3_basescore: hashmap! { adv("CVE-2018-17101") => 8.7 }
+                cvssv3_basescore: hashmap! { adv("CVE-2018-17101") => 8.7 },
+                ..VulnixRes::default()
             }],
         };
         assert_eq!(
-            ticket_list(2, scan, nomaint()),
+            ticket_list(2, scan, false),
             &[Ticket {
                 iteration: 2,
                 pkg: pkg("libtiff-4.0.9"),
@@ -323,10 +325,12 @@ mod test {
             ..Ticket::default()
         };
         // should be sorted by score in decreasing order, undefined scores last
+        let out = format!("{:#}", tkt);
+        println!("{}", out);
         assert_eq!(
-            format!("{:#}", tkt),
+            out,
             "\
-Vulnerability roundup 2: libtiff-4.0.9: 3 advisories\n\
+Vulnerability roundup 2: libtiff-4.0.9: 3 advisories [8.8]\n\
 \n\
 [search](https://search.nix.gsc.io/?q=libtiff&i=fosho&repos=NixOS-nixpkgs), \
 [files](https://github.com/NixOS/nixpkgs/search?utf8=%E2%9C%93&q=libtiff+in%3Apath&type=Code)\n\
@@ -336,9 +340,25 @@ Vulnerability roundup 2: libtiff-4.0.9: 3 advisories\n\
 * [ ] [CVE-2018-17000](https://nvd.nist.gov/vuln/detail/CVE-2018-17000) (br0)\n\
 \n\
 Scanned versions: br0: 5d4a1a3897e; br1: 80738ed9dc0. \
-May contain false positives.\n\
+May contain false positives.\n\n\
         "
         );
+    }
+
+    #[test]
+    fn render_ticket_ping_maintainers() {
+        let b = br("branch0=80738ed9dc0ce48d7796baed5364eef8072c794d");
+        let tkt = Ticket {
+            iteration: 3,
+            pkg: pkg("libtiff-4.0.9"),
+            affected: hashmap! { adv("CVE-2018-17000") => det_br(&[&b], None) },
+            maintainers: vec!["ericson2314".into()],
+            ..Ticket::default()
+        };
+        // should be sorted by score in decreasing order, undefined scores last
+        let out = format!("{:#}", tkt);
+        println!("{}", out);
+        assert!(out.contains("Cc @ericson2314"));
     }
 
     #[test]
@@ -350,7 +370,7 @@ May contain false positives.\n\
         let tkt = Ticket {
             iteration: 1,
             pkg: pkg("libtiff-4.0.9"),
-            affected: hashmap! { adv("CVE-2018-17100") => det_br(&[&br[0]], Some(8.8)) },
+            affected: hashmap! {adv("CVE-2018-17100") => det_br(&[&br[0]], Some(8.8))},
             ..Ticket::default()
         };
         assert!(

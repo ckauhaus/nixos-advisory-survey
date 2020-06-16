@@ -3,12 +3,14 @@
   "name": "libtasn1-4.13",
   "pname": "libtasn1",
   "version": "4.13",
+  "derivation": "/nix/store/g9r1w6bfsnlbpadj0scyxmx2h6bqk9ga-libtasn1-4.13.drv",
   "affected_by": ["CVE-2018-1000654", "CVE-2018-7570"]
  },
  {
   "name": "openjpeg-2.3.0",
   "pname": "openjpeg",
   "version": "2.3.0",
+  "derivation": "/nix/store/230vpq69xfm5c0js7k5mxcxi39cn2ja4-openjpeg-2.3.0.drv",
   "affected_by": ["CVE-2018-16376"]
  }
 ]

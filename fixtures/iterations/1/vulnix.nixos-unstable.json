@@ -11,6 +11,7 @@
   "name": "ncurses-6.1",
   "pname": "ncurses",
   "version": "6.1",
+  "derivation": "/nix/store/g9cqz91g6q1fmxyzi10f1ghkgi3xjyp4-ncurses-6.1-20190112.drv",
   "affected_by": ["CVE-2018-10754"],
   "cvssv3_basescore": {}
  },
@@ -18,6 +19,7 @@
   "name": "binutils-2.30",
   "pname": "binutils",
   "version": "2.30",
+  "derivation": "/nix/store/m0x21lpp0r4mcqkqilpxhgpalsbr1mp2-binutils-wrapper-2.30.drv",
   "affected_by": ["CVE-2018-7568", "CVE-2018-7569"],
   "cvssv3_basescore": {
     "CVE-2018-7568": 5.5,

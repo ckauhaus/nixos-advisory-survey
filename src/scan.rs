@@ -1,7 +1,7 @@
 use super::Opt;
 use crate::advisory::Advisory;
-use crate::nix::{self, Attr, ByAttr, Ping};
-use crate::package::{Maintainer, Package};
+use crate::nix::{self, Ping};
+use crate::package::{Attr, Maintainer, Package};
 
 use anyhow::{bail, ensure, Context, Result};
 use colored::*;
@@ -13,7 +13,7 @@ use smallstr::SmallString;
 use std::collections::HashMap;
 use std::fmt;
 use std::fs::{self, File};
-use std::io::ErrorKind;
+use std::io::BufWriter;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -22,19 +22,49 @@ use thiserror::Error;
 
 pub type ScoreMap = HashMap<Advisory, f32>;
 
-/// vulnix scan result item. vulnix output consists of a Vec of these.
+/// `vulnix` scan result item.
+///
+/// Nearly all of the fields are present in vulnix' JSON output. The only exception is the
+/// `maintainers` vec which will be filled in later.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct VulnixRes {
     #[serde(rename = "name")]
     pub pkg: Package,
+    pub pname: SmallString<[u8; 20]>,
+    pub version: SmallString<[u8; 20]>,
+    pub derivation: String,
     pub affected_by: Vec<Advisory>,
     #[serde(default)]
+    pub whitelisted: Vec<SmallString<[u8; 20]>>,
+    #[serde(default)]
     pub cvssv3_basescore: ScoreMap,
+    #[serde(default)]
+    pub maintainers: Vec<Maintainer>,
 }
 
-pub type ScanByBranch = HashMap<Branch, Vec<VulnixRes>>;
-pub type MaintByAttr = HashMap<Attr, Vec<Maintainer>>;
-pub type MaintByBranch = HashMap<Branch, MaintByAttr>;
+impl VulnixRes {
+    #[allow(unused)]
+    pub fn new(pkg: Package, affected_by: Vec<Advisory>) -> Self {
+        let pname = pkg.pname().into();
+        let version = pkg.version().into();
+        Self {
+            pkg,
+            pname,
+            version,
+            affected_by,
+            ..Self::default()
+        }
+    }
+
+    fn augment(mut self, maint: &HashMap<Attr, Ping>) -> Self {
+        for ping in maint.values() {
+            if ping.name == self.pkg {
+                self.maintainers.extend(ping.maintainers.clone());
+            }
+        }
+        self
+    }
+}
 
 /// NixOS release to scan. Note that the git rev/branch may have a different name than the release
 /// name we publish.
@@ -54,7 +84,7 @@ impl Branch {
         }
     }
 
-    pub fn checkout(&self, repo: &Path) -> Result<()> {
+    fn checkout(&self, repo: &Path) -> Result<()> {
         info!(
             "Checking out {} @ {}",
             self.name.green().bold(),
@@ -76,7 +106,7 @@ impl Branch {
     /// Invokes `vulnix` on a derivation
     ///
     /// vulnix' output is saved to a JSON file iff parsing passed.
-    fn vulnix<P: AsRef<Path>>(&self, drvlist: P, opt: &Opt) -> Result<Vec<VulnixRes>> {
+    fn run_vulnix<P: AsRef<Path>>(&self, drvlist: P, opt: &Opt) -> Result<Vec<VulnixRes>> {
         info!("Scanning derivations from {}", drvlist.as_ref().display());
         let full_wl = opt.whitelist_dir.join(format!("{}.toml", self.name));
         let cmd = Exec::cmd(&opt.vulnix)
@@ -92,44 +122,19 @@ impl Branch {
             Exited(e) if e <= 2 => (),
             _ => bail!("vulnix failed with exit status {:?}", c.exit_status),
         }
-        let res = serde_json::from_slice(&c.stdout)
-            .with_context(|| format!("Cannot parse vulnix JSON output: {:?}", &c.stdout));
-        // save for future reference
-        let fname = opt.vulnix_json(&self.name);
-        fs::write(&fname, c.stdout)
-            .with_context(|| format!("Cannot write output to {:?}", fname))?;
-        res
+        serde_json::from_slice(&c.stdout)
+            .with_context(|| format!("Cannot parse vulnix JSON output: {:?}", &c.stdout))
     }
-
-    fn maintainers(&self, relevant_attrs: &ByAttr, repo: &Path, opt: &Opt) -> Result<MaintByAttr> {
-        let ping = nix::maintainers(repo, relevant_attrs.keys())
-            .context("Error while querying package maintainers")?;
-        let res = collect_maintainers(ping);
-        // save for future reference
-        let fname = opt.maint_json(&self.name);
-        serde_json::to_writer(File::create(&fname)?, &res)
-            .with_context(|| format!("Cannot write output to {:?}", fname))?;
-        Ok(res)
-    }
-}
-
-fn collect_maintainers(ping: Vec<Ping>) -> MaintByAttr {
-    let mut res = MaintByAttr::new();
-    for p in ping {
-        let e = res.entry(p.package).or_insert(Vec::new());
-        (*e).push(p.handle);
-    }
-    res
-}
-
-lazy_static! {
-    static ref BRANCHSPEC: Regex = Regex::new(r"^([^/=[:space:]]+)(=(\S+))?$").unwrap();
 }
 
 #[derive(Debug, Error)]
 pub enum BranchErr {
     #[error("Invalid branch specification {spec}")]
     Invalid { spec: String },
+}
+
+lazy_static! {
+    static ref BRANCHSPEC: Regex = Regex::new(r"^([^/=[:space:]]+)(=(\S+))?$").unwrap();
 }
 
 impl FromStr for Branch {
@@ -158,8 +163,27 @@ impl fmt::Display for Branch {
     }
 }
 
+/// Intermediary: arranges vulnix scan results by branch. Will be consolidated later.
+pub type ScanByBranch = HashMap<Branch, Vec<VulnixRes>>;
+
 fn resolve_rev(rev: &str, repo: &Repository) -> Result<String> {
     Ok(repo.revparse_single(rev)?.id().to_string())
+}
+
+fn postprocess(
+    scan: Vec<VulnixRes>,
+    maintainers: &HashMap<Attr, Ping>,
+    out_json: &Path,
+) -> Result<Vec<VulnixRes>> {
+    // add maintainers for each scan result
+    let scan = scan
+        .into_iter()
+        .map(|res| res.augment(maintainers))
+        .collect();
+    // save for future reference
+    serde_json::to_writer(BufWriter::new(File::create(out_json)?), &scan)
+        .with_context(|| format!("Failed to write vulnix output to {:?}", out_json))?;
+    Ok(scan)
 }
 
 /// Enumerates inividual checkouts of the same repo which should be scanned in turn.
@@ -199,13 +223,12 @@ impl Branches {
     }
 
     /// Reads previous scan results from a directory
-    pub fn load(&self, opt: &Opt) -> Result<(ScanByBranch, MaintByBranch)> {
+    pub fn load(&self, opt: &Opt) -> Result<ScanByBranch> {
         info!(
             "Loading scan results from {}",
             opt.iterdir().to_string_lossy().green()
         );
         let mut sbb = ScanByBranch::new();
-        let mut mbb = MaintByBranch::new();
         for branch in self.iter() {
             let v = opt.vulnix_json(&branch.name);
             sbb.insert(
@@ -214,23 +237,13 @@ impl Branches {
                     .and_then(|f| Ok(serde_json::from_reader(f)?))
                     .with_context(|| format!("Error while loading vulnix results from {:?}", v))?,
             );
-            let m = opt.maint_json(&branch.name);
-            mbb.insert(
-                branch.clone(),
-                match File::open(&m) {
-                    Ok(m) => Ok(serde_json::from_reader(m)?),
-                    Err(e) if e.kind() == ErrorKind::NotFound => continue,
-                    Err(e) => Err(e),
-                }
-                .with_context(|| format!("Error while loading maintainers from {:?}", m))?,
-            );
         }
-        Ok((sbb, mbb))
+        Ok(sbb)
     }
 
     /// Checks out all specified branches in turn, instantiates the release derivation and invokes
     /// vulnix on it. Figures out maintainers for affected packages.
-    pub fn scan(&self, opt: &Opt) -> Result<(ScanByBranch, MaintByBranch)> {
+    pub fn scan(&self, opt: &Opt) -> Result<ScanByBranch> {
         let repo = self
             .repo
             .as_ref()
@@ -238,24 +251,32 @@ impl Branches {
         let dir = opt.iterdir();
         fs::create_dir_all(&dir).ok();
         let mut sbb = ScanByBranch::new();
-        let mut mbb = MaintByBranch::new();
         for branch in self.iter() {
             branch.checkout(repo)?;
             let attrs = nix::all_derivations(repo)?;
             nix::ensure_drvs_exist(repo, &attrs)?;
             let drvlist = attrs.dump_drvlist()?;
-            let scan = branch.vulnix(&drvlist, opt).with_context(|| {
+            let scan_res = branch.run_vulnix(&drvlist, opt).with_context(|| {
                 format!(
                     "Scan failed - retaining derivation list in {:?}",
                     drvlist.keep().unwrap()
                 )
             })?;
-            let pkgs: Vec<&Package> = scan.iter().map(|r| &r.pkg).collect();
-            let attrs = attrs.intersect_pkgs(&pkgs);
-            sbb.insert(branch.clone(), scan);
-            mbb.insert(branch.clone(), branch.maintainers(&attrs, repo, &opt)?);
+            let maintainers = nix::collect_maintainers(
+                repo,
+                attrs
+                    .iter()
+                    .filter(|(_, drv)| scan_res.iter().any(|res| res.pkg == drv.name))
+                    .map(|(k, _v)| k),
+            )
+            .context("Error while querying package maintainers")?;
+            debug!("Collected maintainers: {:?}", maintainers);
+            sbb.insert(
+                branch.clone(),
+                postprocess(scan_res, &maintainers, &opt.vulnix_json(&branch.name))?,
+            );
         }
-        Ok((sbb, mbb))
+        Ok(sbb)
     }
 }
 
@@ -272,12 +293,11 @@ impl Deref for Branches {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::tests::{br, create_branches};
+    use crate::tests::{br, create_branches, pkg};
 
     use libflate::gzip;
     use std::error::Error;
     use std::fs::{create_dir, read_to_string};
-    use std::io::Write;
     use tar::Archive;
     use tempfile::TempDir;
 
@@ -344,20 +364,16 @@ mod test {
     fn load_json() {
         let opt = opt();
         let branches = create_branches(&["nixos-18.03", "nixos-18.09", "nixos-unstable"]);
-        let (sbb, mbb) = branches.load(&opt).unwrap();
+        let sbb = branches.load(&opt).unwrap();
         // check only hash lengths; we compare exact strings in the ticket tests
         assert_eq!(sbb.len(), 3);
         assert_eq!(sbb[&br("nixos-18.03")].len(), 2);
         assert_eq!(sbb[&br("nixos-18.09")].len(), 4);
         assert_eq!(sbb[&br("nixos-unstable")].len(), 3);
-        assert_eq!(mbb.len(), 3);
-        assert_eq!(mbb[&br("nixos-18.03")].len(), 1);
-        assert_eq!(mbb[&br("nixos-18.09")].len(), 2);
-        assert_eq!(mbb[&br("nixos-unstable")].len(), 1);
     }
 
     #[test]
-    fn run_vulnix() -> Result<(), Box<dyn Error>> {
+    fn vulnix() -> Result<(), Box<dyn Error>> {
         let mut opt = opt();
         let td = TempDir::new()?;
         opt.basedir = td.path().to_path_buf();
@@ -365,14 +381,8 @@ mod test {
         let orig_json = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("fixtures/iterations/1/vulnix.nixos-18.09.json");
         let exp: Vec<VulnixRes> = serde_json::from_str(&read_to_string(&orig_json)?)?;
-        let res = br("nixos-18.09").vulnix(PathBuf::from("result"), &opt)?;
+        let res = br("nixos-18.09").run_vulnix(PathBuf::from("result"), &opt)?;
         assert_eq!(res, exp);
-        // see if vulnix() saved original output
-        assert_eq!(
-            read_to_string(orig_json).expect("read original vulnix json"),
-            read_to_string(td.path().join("1/vulnix.nixos-18.09.json"))
-                .expect("cannot read saved vulnix results (file exists?)")
-        );
         Ok(())
     }
 
@@ -398,19 +408,39 @@ mod test {
     }
 
     #[test]
-    fn load_json_should_ignore_missing_maintainers() -> Result<(), Box<dyn Error>> {
-        let mut opt = opt();
-        let td = TempDir::new()?;
-        opt.basedir = td.path().to_path_buf();
-        create_dir(opt.basedir.join("1"))?;
-        write!(
-            File::create(opt.basedir.join("1/vulnix.nixos-unstable.json"))?,
-            "{}",
-            include_str!("../fixtures/iterations/1/vulnix.nixos-unstable.json")
-        )?;
-        let branches = create_branches(&["nixos-unstable"]);
-        let (_sbb, mbb) = branches.load(&opt)?;
-        assert!(mbb.is_empty());
+    fn postprocess_scan() -> Result<()> {
+        let scan = serde_json::from_str(include_str!(
+            "../fixtures/iterations/1/vulnix.nixos-unstable.json"
+        ))?;
+        let maint = serde_json::from_str(include_str!("../fixtures/maintainers.nix.json"))?;
+        let t = TempDir::new()?;
+        let tp = t.path();
+        eprintln!("{:?}", tp);
+        serde_json::to_writer(File::create(tp.join("before.json"))?, &scan).unwrap();
+        let scan = postprocess(scan, &maint, &tp.join("postprocess.json"))?;
+        // verify that postprocess.json contains all the data
+        assert_eq!(
+            scan,
+            serde_json::from_reader::<_, Vec<VulnixRes>>(File::open(tp.join("postprocess.json"))?)?
+        );
+        assert_eq!(&scan[1].pkg, "ncurses-6.1");
+        assert_eq!(scan[1].maintainers, &["andir", "edolstra"]);
+        assert_eq!(&scan[2].pkg, "binutils-2.30");
+        assert_eq!(scan[2].maintainers, &["ericson2314"]);
         Ok(())
+    }
+
+    #[test]
+    fn augment_maintainers() {
+        let maint: HashMap<Attr, Ping> =
+            serde_json::from_str(&include_str!("../fixtures/maintainers.nix.json")).unwrap();
+        let res = VulnixRes::new(pkg("ncurses-6.1"), vec![]);
+        assert_eq!(
+            res.augment(&maint).maintainers,
+            &[
+                Maintainer::from_str("andir"),
+                Maintainer::from_str("edolstra")
+            ]
+        );
     }
 }

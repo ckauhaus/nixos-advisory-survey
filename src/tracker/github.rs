@@ -25,8 +25,6 @@ pub enum Error {
     RepoFormat,
     #[error("Trying to construct invalid HTTP header")]
     Header(#[from] http::header::InvalidHeaderValue),
-    #[error("Invalid HTTP data")]
-    HTTP(#[from] http::Error),
 }
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -97,24 +95,18 @@ impl GitHub {
     }
 
     async fn create(&self, tkt: &Ticket) -> Result<Issue> {
-        let mut labels = vec!["1.severity: security"];
-        if tkt.max_score().into_iter().any(|s| *s >= 7.5) {
-            labels.push("CVSS_HIGH");
-        }
         let res = self
             .client
             .post(&self.url_for.issues)
             .json(&json!({
                 "title": tkt.summary(),
                 "body": tkt.to_string(),
-                "labels": labels
+                "labels": vec!["1.severity: security"]
             }))
             .send()
-            .await?
-            .error_for_status()?
-            .text()
             .await?;
-        serde_json::from_str(&res).map_err(|e| Error::API { res, e })
+        let txt = res.text().await?;
+        serde_json::from_str(&txt).map_err(|e| Error::API { res: txt, e })
     }
 
     async fn related(&self, tkt: &Ticket) -> Result<Search> {

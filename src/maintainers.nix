@@ -1,76 +1,82 @@
 { changedattrsjson }:
 
+with builtins;
+
 let
   pkgs = import ./. {};
 
-  changedattrs = builtins.fromJSON (builtins.readFile changedattrsjson);
+  changedattrs = fromJSON (readFile changedattrsjson);
 
-  enrichedAttrs = builtins.map
+  enrichedAttrs = map
     (path: {
       path = path;
-      name = builtins.concatStringsSep "." path;
+      name = concatStringsSep "." path;
     })
     changedattrs;
 
-  validPackageAttributes = builtins.filter
+  validPackageAttributes = filter
     (pkg:
       if (pkgs.lib.attrsets.hasAttrByPath pkg.path pkgs)
-      then (if (builtins.tryEval (pkgs.lib.attrsets.attrByPath pkg.path null pkgs)).success
+      then (if (tryEval (pkgs.lib.attrsets.attrByPath pkg.path null pkgs)).success
         then true
-        else builtins.trace "Failed to access ${pkg.name} even though it exists" false)
-      else builtins.trace "Failed to locate ${pkg.name}." false
+        else trace "Failed to access ${pkg.name} even though it exists" false)
+      else trace "Failed to locate ${pkg.name}." false
     )
     enrichedAttrs;
 
-  attrsWithPackages = builtins.map
+  attrsWithPackages = map
     (pkg: pkg // { package = pkgs.lib.attrsets.attrByPath pkg.path null pkgs; })
     validPackageAttributes;
 
-  attrsWithMaintainers = builtins.map
+  attrsWithMaintainers = map
     (pkg: pkg // { maintainers = (pkg.package.meta or {}).maintainers or []; })
     attrsWithPackages;
 
-  attrsWeCanPing = builtins.filter
-    (pkg: if (builtins.length pkg.maintainers) > 0
-      then true
-      else builtins.trace "Package has no maintainers: ${pkg.name}" false
-    )
-    attrsWithMaintainers;
-
-  listToPing = pkgs.lib.lists.flatten
-    (builtins.map
-      (pkg:
-        builtins.map (maintainer: {
-          handle = pkgs.lib.toLower maintainer.github;
-          pkgName = pkg.name;
-        })
-        pkg.maintainers
-      )
-      attrsWithMaintainers);
-
-  byMaintainer = pkgs.lib.lists.foldr
-    (ping: collector: collector // {
-      "${ping.handle}" = [ { inherit (ping) pkgName; } ] ++ (collector."${ping.handle}" or []);
+  listToPing = listToAttrs
+    (map
+    (pkg: {
+      name = pkg.name;
+      value = {
+        name = pkg.package.name;
+        maintainers = pkgs.lib.flatten (
+          map (maint: maint.github or []) pkg.maintainers);
+      };
     })
-    {}
-    listToPing;
-
-  packagesPerMaintainer = pkgs.lib.attrsets.mapAttrs
-    (maintainer: packages:
-      builtins.map (pkg: pkg.pkgName)
-      packages)
-    byMaintainer;
+    attrsWithMaintainers);
 
 in listToPing
 
+# Example input:
+# [["binutils"], ["dnsutils"], ["systemd"], ["python3Packages", "acoustics"]]
+#
 # Example output:
-# [
-#   {
-#     "handle": "ckauhaus",
-#     "pkgName": "vulnix"
+# {
+#   "binutils": {
+#     "maintainers": [
+#       "ericson2314"
+#     ],
+#     "name": "binutils-wrapper-2.31.1"
 #   },
-#   {
-#     "handle": "edolstra",
-#     "pkgName": "hello"
+#   "dnsutils": {
+#     "maintainers": [
+#       "peti",
+#       "globin"
+#     ],
+#     "name": "bind-9.14.12"
+#   },
+#   "python3Packages.acoustics": {
+#     "maintainers": [
+#       "fridh"
+#     ],
+#     "name": "python3.7-acoustics-0.2.4"
+#   },
+#   "systemd": {
+#     "maintainers": [
+#       "andir",
+#       "edolstra",
+#       "flokli",
+#       "mic92"
+#     ],
+#     "name": "systemd-243.7"
 #   }
-# ]
+# }

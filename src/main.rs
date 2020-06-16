@@ -10,7 +10,7 @@ mod tests;
 mod ticket;
 mod tracker;
 
-use crate::scan::{Branch, Branches, MaintByBranch};
+use crate::scan::{Branch, Branches};
 use crate::ticket::Ticket;
 use crate::tracker::Tracker;
 
@@ -95,13 +95,8 @@ pub struct Opt {
 
 impl Opt {
     /// Constructs per-iteration directory from basedir and iteration number
-    pub fn iterdir(&self) -> PathBuf {
+    fn iterdir(&self) -> PathBuf {
         self.basedir.join(self.iteration.to_string())
-    }
-
-    /// Full path to JSON file containing maintainers
-    fn maint_json(&self, branch: &str) -> PathBuf {
-        self.iterdir().join(format!("maintainers.{}.json", branch))
     }
 
     /// Full path to JSON file containing vulnix scan results
@@ -111,28 +106,39 @@ impl Opt {
 }
 
 async fn create(tkt: Ticket, iterdir: &Path, tracker: &dyn Tracker) -> Result<()> {
-    let f = iterdir.join(tkt.file_name());
     let name = tkt.name().to_owned();
-    if f.exists() {
-        warn!("{}: skipping, file exists", name.yellow());
-        return Ok(());
-    }
     let tkt = tracker
         .create_issue(tkt)
         .await
         .with_context(|| format!("Failed to create issue for {}", name.purple().bold()))?;
-    tkt.write(&f)?;
+    tkt.write(&iterdir.join(tkt.file_name()))?;
     Ok(())
 }
+
+// GitHub won't accept more than 30 issues in a batch
+const MAX_ISSUES: usize = 30;
 
 async fn issues(tickets: Vec<Ticket>, iterdir: &Path, tracker: &dyn Tracker) -> Result<()> {
     info!("Creating issues");
     let handles: Vec<_> = tickets
         .into_iter()
+        .filter(|tkt| {
+            if iterdir.join(tkt.file_name()).exists() {
+                info!("{}: skipping, file exists", tkt.name().yellow());
+                false
+            } else {
+                true
+            }
+        })
+        .take(MAX_ISSUES)
         .map(|tkt| create(tkt, iterdir, tracker))
         .collect();
+    let len = handles.len();
     for hdl in handles {
         hdl.await?;
+    }
+    if len > MAX_ISSUES {
+        warn!("Not all issues created due to rate limits. Wait 5 minutes and rerun with '-R'");
     }
     Ok(())
 }
@@ -150,21 +156,13 @@ fn run() -> Result<()> {
         ),
         (_, _) => Box::new(tracker::Null::new()),
     };
-    let (sbb, mbb) = if opt.no_run {
+    let sbb = if opt.no_run {
         branches.load(&opt)?
     } else {
         branches.scan(&opt)?
     };
     Runtime::new().unwrap().block_on(issues(
-        ticket::ticket_list(
-            opt.iteration,
-            sbb,
-            if opt.ping_maintainers {
-                mbb
-            } else {
-                MaintByBranch::default()
-            },
-        ),
+        ticket::ticket_list(opt.iteration, sbb, opt.ping_maintainers),
         &dir,
         tracker.borrow(),
     ))?;
