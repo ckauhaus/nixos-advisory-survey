@@ -17,6 +17,7 @@ use crate::tracker::Tracker;
 use anyhow::{bail, Context, Error};
 use colored::*;
 use env_logger::Env;
+use futures::stream::{FuturesUnordered, StreamExt};
 use std::borrow::Borrow;
 use std::path::{Path, PathBuf};
 use structopt::StructOpt;
@@ -120,7 +121,7 @@ const MAX_ISSUES: usize = 30;
 
 async fn issues(tickets: Vec<Ticket>, iterdir: &Path, tracker: &dyn Tracker) -> Result<()> {
     info!("Creating issues");
-    let handles: Vec<_> = tickets
+    let todo: Vec<_> = tickets
         .into_iter()
         .filter(|tkt| {
             if iterdir.join(tkt.file_name()).exists() {
@@ -130,12 +131,18 @@ async fn issues(tickets: Vec<Ticket>, iterdir: &Path, tracker: &dyn Tracker) -> 
                 true
             }
         })
+        .collect();
+    let len = todo.len();
+    let mut handles: FuturesUnordered<_> = todo
+        .into_iter()
         .take(MAX_ISSUES)
         .map(|tkt| create(tkt, iterdir, tracker))
         .collect();
-    let len = handles.len();
-    for hdl in handles {
-        hdl.await?;
+    while let (Some(res), remain) = handles.into_future().await {
+        if let Err(e) = res {
+            error!("While creating issue: {}", e);
+        }
+        handles = remain;
     }
     if len > MAX_ISSUES {
         warn!("Not all issues created due to rate limits. Wait 5 minutes and rerun with '-R'");
