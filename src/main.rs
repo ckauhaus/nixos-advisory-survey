@@ -119,30 +119,27 @@ async fn create(tkt: Ticket, iterdir: &Path, tracker: &dyn Tracker) -> Result<()
 // GitHub won't accept more than 30 issues in a batch
 const MAX_ISSUES: usize = 30;
 
-async fn issues(tickets: Vec<Ticket>, iterdir: &Path, tracker: &dyn Tracker) -> Result<()> {
+async fn issues(mut tickets: Vec<Ticket>, iterdir: &Path, tracker: &dyn Tracker) -> Result<()> {
     info!("Creating issues");
-    let todo: Vec<_> = tickets
-        .into_iter()
-        .filter(|tkt| {
-            if iterdir.join(tkt.file_name()).exists() {
-                info!("{}: skipping, file exists", tkt.name().yellow());
-                false
-            } else {
-                true
-            }
-        })
-        .collect();
-    let len = todo.len();
-    let mut handles: FuturesUnordered<_> = todo
+    tickets.retain(|tkt| {
+        if iterdir.join(tkt.file_name()).exists() {
+            info!("{}: skipping, file exists", tkt.name().yellow());
+            false
+        } else {
+            true
+        }
+    });
+    let len = tickets.len();
+    let mut handles: FuturesUnordered<_> = tickets
         .into_iter()
         .take(MAX_ISSUES)
         .map(|tkt| create(tkt, iterdir, tracker))
         .collect();
-    while let (Some(res), remain) = handles.into_future().await {
+    while let (Some(res), remaining) = handles.into_future().await {
         if let Err(e) = res {
-            error!("While creating issue: {}", e);
+            error!("{:#}", e);
         }
-        handles = remain;
+        handles = remaining;
     }
     if len > MAX_ISSUES {
         warn!("Not all issues created due to rate limits. Wait 5 minutes and rerun with '-R'");
