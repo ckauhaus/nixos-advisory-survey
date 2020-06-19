@@ -73,7 +73,7 @@ impl Ticket {
         let advisory = if num == 1 { "advisory" } else { "advisories" };
         let max_cvss = self
             .max_score()
-            .map(|s| format!(" [{}]", s))
+            .map(|s| format!(" [{:.1}]", s))
             .unwrap_or_default();
         format!(
             "Vulnerability roundup {}: {}: {} {}{}",

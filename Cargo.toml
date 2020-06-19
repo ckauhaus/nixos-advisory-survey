@@ -1,6 +1,6 @@
 [package]
 name = "survey"
-version = "0.7.0"
+version = "0.7.1-dev"
 authors = ["Christian Kauhaus <kc@flyingcircus.io>"]
 description = "NixOS advisory survey (used to feed vulnerability roundups)"
 keywords = ["security"]
