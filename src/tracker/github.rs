@@ -1,4 +1,4 @@
-use super::Tracker;
+use super::{Issue, Tracker};
 use crate::ticket::Ticket;
 
 use async_trait::async_trait;
@@ -29,22 +29,6 @@ pub enum Error {
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
-/// GitHub response to search
-#[derive(Deserialize, Debug, Clone)]
-struct Search {
-    items: Vec<Issue>,
-    total_count: u64,
-}
-
-/// GitHub response to issue creation/search
-#[derive(Deserialize, Debug, Clone)]
-struct Issue {
-    id: u64,
-    number: u64,
-    url: String,
-    html_url: String,
-}
-
 /// GitHub response to comment creation
 #[derive(Deserialize, Debug, Clone)]
 struct Comment {
@@ -66,6 +50,13 @@ impl UrlFor {
             search: "https://api.github.com/search/issues".to_owned(),
         }
     }
+}
+
+/// Issue search results
+#[derive(Deserialize, Debug, Clone, Default)]
+struct Search {
+    items: Vec<Issue>,
+    total_count: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -143,6 +134,24 @@ repo:{} is:open label:\"1.severity: security\" in:title \"Vulnerability roundup 
             .await?;
         serde_json::from_str(&res).map_err(|e| Error::API { res, e })
     }
+
+    async fn search_(&self, page: usize) -> Result<Search> {
+        let query = format!(
+            "repo:{} is:open label:\"1.severity: security\" in:title \"Vulnerability roundup\"",
+            self.repo
+        );
+        let res = self
+            .client
+            .get(&self.url_for.search)
+            .query(&[("q", query), ("page", page.to_string())])
+            .send()
+            .await?
+            .error_for_status()?
+            .text()
+            .await?;
+        // debug!("GitHub: {}", res);
+        serde_json::from_str(&res).map_err(|e| Error::API { res, e })
+    }
 }
 
 #[async_trait]
@@ -158,6 +167,18 @@ impl Tracker for GitHub {
             issue_url: Some(c.html_url),
             ..tkt
         })
+    }
+
+    async fn search(&self) -> Result<Vec<Issue>, super::Error> {
+        let mut iss = Vec::new();
+        for page in 1..100 {
+            let mut s = self.search_(page).await?;
+            iss.append(&mut s.items);
+            if iss.len() >= s.total_count {
+                break;
+            }
+        }
+        Ok(iss)
     }
 }
 

@@ -1,5 +1,6 @@
-use super::Tracker;
+use super::{Issue, Tracker};
 use crate::Ticket;
+
 use async_trait::async_trait;
 
 pub struct Null;
@@ -14,5 +15,9 @@ impl Null {
 impl Tracker for Null {
     async fn create_issue(&self, tkt: Ticket) -> Result<Ticket, super::Error> {
         Ok(tkt)
+    }
+
+    async fn search(&self) -> Result<Vec<Issue>, super::Error> {
+        Ok(Vec::default())
     }
 }

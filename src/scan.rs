@@ -1,7 +1,7 @@
-use super::Opt;
 use crate::advisory::Advisory;
 use crate::nix::{self, Ping};
 use crate::package::{Attr, Maintainer, Package};
+use crate::Roundup;
 
 use anyhow::{bail, ensure, Context, Result};
 use colored::*;
@@ -106,7 +106,7 @@ impl Branch {
     /// Invokes `vulnix` on a derivation
     ///
     /// vulnix' output is saved to a JSON file iff parsing passed.
-    fn run_vulnix<P: AsRef<Path>>(&self, drvlist: P, opt: &Opt) -> Result<Vec<VulnixRes>> {
+    fn run_vulnix<P: AsRef<Path>>(&self, drvlist: P, opt: &Roundup) -> Result<Vec<VulnixRes>> {
         info!("Scanning derivations from {}", drvlist.as_ref().display());
         let full_wl = opt.whitelist_dir.join(format!("{}.toml", self.name));
         let cmd = Exec::cmd(&opt.vulnix)
@@ -223,7 +223,7 @@ impl Branches {
     }
 
     /// Reads previous scan results from a directory
-    pub fn load(&self, opt: &Opt) -> Result<ScanByBranch> {
+    pub fn load(&self, opt: &Roundup) -> Result<ScanByBranch> {
         info!(
             "Loading scan results from {}",
             opt.iterdir().to_string_lossy().green()
@@ -243,7 +243,7 @@ impl Branches {
 
     /// Checks out all specified branches in turn, instantiates the release derivation and invokes
     /// vulnix on it. Figures out maintainers for affected packages.
-    pub fn scan(&self, opt: &Opt) -> Result<ScanByBranch> {
+    pub fn scan(&self, opt: &Roundup) -> Result<ScanByBranch> {
         let repo = self
             .repo
             .as_ref()
@@ -351,12 +351,12 @@ mod test {
     }
 
     /// Standard `Opt` struct for testing purposes
-    fn opt() -> Opt {
-        Opt {
+    fn opt() -> Roundup {
+        Roundup {
             vulnix: fake_vulnix(),
             basedir: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/iterations"),
             iteration: 1,
-            ..Opt::default()
+            ..Roundup::default()
         }
     }
 
