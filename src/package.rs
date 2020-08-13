@@ -17,6 +17,8 @@ use std::str::FromStr;
 use tempfile::TempPath;
 use thiserror::Error;
 
+// XXX convert to SmolStr
+
 /// Nix package name. Must contain a dash followed by a version
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
@@ -46,7 +48,7 @@ impl Package {
         &self.name[self.v_idx..]
     }
 
-    fn as_str(&self) -> &str {
+    pub fn as_str(&self) -> &str {
         self.name.as_str()
     }
 }

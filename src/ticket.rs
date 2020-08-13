@@ -4,8 +4,9 @@ use crate::scan::{Branch, ScanByBranch, ScoreMap};
 
 use colored::*;
 use ordered_float::OrderedFloat;
+use smol_str::SmolStr;
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::format_args;
 use std::fs;
@@ -120,11 +121,7 @@ impl fmt::Display for Ticket {
             .collect();
         relevant.sort();
         relevant.dedup();
-        writeln!(
-            f,
-            "\nScanned versions: {}. May contain false positives.\n",
-            relevant.join("; ")
-        )?;
+        writeln!(f, "\nScanned versions: {}.\n", relevant.join("; "))?;
         for m in &self.maintainers {
             writeln!(f, "Cc @{}", m)?;
         }
@@ -219,6 +216,55 @@ pub fn ticket_list(iteration: u32, scan_res: ScanByBranch, ping_maintainers: boo
     tickets
 }
 
+#[derive(Debug, Default)]
+pub struct Applicable {
+    known: HashSet<SmolStr>,
+}
+
+impl Applicable {
+    fn from_store_path(sp: &str) -> Option<&str> {
+        let sp = sp.trim();
+        match sp.len() {
+            0 => None,
+            x if x > 44 && &sp[43..44] == "-" => Some(&sp[44..]),
+            x if x > 33 && &sp[32..33] == "-" => Some(&sp[33..]),
+            _ => Some(sp),
+        }
+    }
+
+    fn extract_derivations(storedump: &str) -> impl Iterator<Item = SmolStr> + '_ {
+        static STRIP_OUTPUTS: &[&str] = &["-dev", "-bin", "-out", "-lib", "-ga"];
+        storedump.lines().filter_map(|line| {
+            if let Some(deriv) = Self::from_store_path(line) {
+                for suffix in STRIP_OUTPUTS {
+                    if deriv.ends_with(suffix) {
+                        return Some(SmolStr::new(&deriv[..(deriv.len() - suffix.len())]));
+                    }
+                }
+                Some(SmolStr::new(deriv))
+            } else {
+                None
+            }
+        })
+    }
+
+    pub fn new(dir: &Path) -> Result<Self, io::Error> {
+        let mut known: HashSet<SmolStr> = HashSet::new();
+        for entry in fs::read_dir(dir)? {
+            let e = entry?;
+            if e.file_type()?.is_file() && &e.file_name().to_string_lossy()[0..1] != "." {
+                known.extend(Self::extract_derivations(&fs::read_to_string(&e.path())?))
+            }
+        }
+        Ok(Self { known })
+    }
+
+    pub fn filter(&self, mut tickets: Vec<Ticket>) -> Vec<Ticket> {
+        tickets.retain(|t| self.known.contains(t.pkg.as_str()));
+        tickets
+    }
+}
+
 // === Tests ===
 
 #[cfg(test)]
@@ -226,7 +272,9 @@ mod test {
     use super::*;
     use crate::scan::VulnixRes;
     use crate::tests::{adv, br, create_branches, pkg};
+
     use maplit::hashmap;
+    use tempfile::TempDir;
 
     /// Helpers for quick construction of Detail structs
     fn det(branches: &[&str], score: Option<f32>) -> Detail {
@@ -339,8 +387,7 @@ Vulnerability roundup 2: libtiff-4.0.9: 3 advisories [8.8]\n\
 * [ ] [CVE-2018-17100](https://nvd.nist.gov/vuln/detail/CVE-2018-17100) CVSSv3=8.7 (br0)\n\
 * [ ] [CVE-2018-17000](https://nvd.nist.gov/vuln/detail/CVE-2018-17000) (br0)\n\
 \n\
-Scanned versions: br0: 5d4a1a3897e; br1: 80738ed9dc0. \
-May contain false positives.\n\n\
+Scanned versions: br0: 5d4a1a3897e; br1: 80738ed9dc0.\n\n\
         "
         );
     }
@@ -375,7 +422,7 @@ May contain false positives.\n\n\
         };
         assert!(
             tkt.to_string()
-                .contains("versions: nixos-18.09: 5d4a1a3897e. May"),
+                .contains("versions: nixos-18.09: 5d4a1a3897e"),
             format!("branch summary not correct:\n{}", tkt)
         );
     }
@@ -429,5 +476,66 @@ May contain false positives.\n\n\
             ..Ticket::default()
         };
         assert_eq!(tkt.max_score().unwrap().into_inner(), 9.8);
+    }
+
+    #[test]
+    fn applicable_should_contain_derivations() {
+        let a = Applicable::new(&Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/storepaths"))
+            .expect("failed to create Applicable instance");
+        assert!(a.known.contains("zsh-5.7.1")); // from vm4
+        assert!(a.known.contains("nspr-4.21")); // from vm5
+        assert!(a.known.contains("nodejs-8.15.1")); // from vm9
+    }
+
+    #[test]
+    fn filter_relevant() {
+        let td = TempDir::new().unwrap();
+        // libtiff-4.0.8 is not present on any vm
+        let t1 = Ticket {
+            pkg: pkg("libtiff-4.0.8"),
+            ..Ticket::default()
+        };
+        let res = Applicable::new(td.path()).unwrap().filter(vec![t1.clone()]);
+        assert_eq!(res, vec![]);
+
+        // net-snmp-5.8 is present on vm4 (without prefix)
+        let t2 = Ticket {
+            pkg: pkg("net-snmp-5.8"),
+            ..Ticket::default()
+        };
+        // boehm-gc-8.0.2 is present on vm5 (with Nix hash prefix)
+        let t3 = Ticket {
+            pkg: pkg("boehm-gc-8.0.2"),
+            ..Ticket::default()
+        };
+        // gdbm-1.18.1 is present on vm9 (with full Nix store prefix)
+        let t4 = Ticket {
+            pkg: pkg("gdbm-1.18.1"),
+            ..Ticket::default()
+        };
+        let a = Applicable::new(&Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/storepaths"))
+            .expect("failed to create Applicable instance");
+        let res = a.filter([&t1, &t2, &t3, &t4].iter().map(|&t| t.clone()).collect());
+        assert_eq!(res, vec![t2.clone(), t3.clone(), t4.clone()]);
+    }
+
+    #[test]
+    fn strip_output_suffix() {
+        let storedump = "\
+w43m4jsawvibjx5r20rx26h19hxkq5dg-db-5.3.28-bin
+/nix/store/1yqbpsfyqcamlr79jzsh1cpd2pkv1858-unbound-1.9.0-lib
+util-linux-2.33.1-dev
+zsh-5.7.1
+        ";
+        let derivs: Vec<_> = Applicable::extract_derivations(storedump).collect();
+        assert_eq!(
+            vec![
+                "db-5.3.28",
+                "unbound-1.9.0",
+                "util-linux-2.33.1",
+                "zsh-5.7.1"
+            ],
+            derivs
+        );
     }
 }

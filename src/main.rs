@@ -12,7 +12,7 @@ mod ticket;
 mod tracker;
 
 use crate::scan::{Branch, Branches};
-use crate::ticket::Ticket;
+use crate::ticket::{Applicable, Ticket};
 use crate::tracker::Tracker;
 
 use anyhow::{bail, Context, Error};
@@ -109,6 +109,9 @@ pub struct Roundup {
     /// Ping package maintainers
     #[structopt(short = "m", long)]
     ping_maintainers: bool,
+    /// Only consider packages found in at least one Nix store dump in DIR
+    #[structopt(short = "f", long, value_name = "DIR", parse(from_os_str))]
+    filter_dir: Option<PathBuf>,
     /// Nth survey iteration
     #[structopt(value_name = "N")]
     iteration: u32,
@@ -211,12 +214,13 @@ async fn roundup(opt: &Opt, r_opt: &Roundup) -> Result<()> {
     } else {
         branches.scan(r_opt)?
     };
-    make_issues(
-        ticket::ticket_list(r_opt.iteration, sbb, r_opt.ping_maintainers),
-        &dir,
-        tracker.borrow(),
-    )
-    .await
+    let tickets = ticket::ticket_list(r_opt.iteration, sbb, r_opt.ping_maintainers);
+    let tickets = if let Some(ref storepaths_dir) = r_opt.filter_dir {
+        Applicable::new(storepaths_dir)?.filter(tickets)
+    } else {
+        tickets
+    };
+    make_issues(tickets, &dir, tracker.borrow()).await
 }
 
 async fn run() -> Result<()> {
