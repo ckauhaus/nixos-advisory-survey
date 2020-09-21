@@ -437,10 +437,7 @@ mod test {
         let res = VulnixRes::new(pkg("ncurses-6.1"), vec![]);
         assert_eq!(
             res.augment(&maint).maintainers,
-            &[
-                Maintainer::from_str("andir"),
-                Maintainer::from_str("edolstra")
-            ]
+            &[Maintainer::from("andir"), Maintainer::from("edolstra")]
         );
     }
 }

@@ -3,7 +3,7 @@ use lazy_static::lazy_static;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use smallstr::SmallString;
+use smol_str::SmolStr;
 use std::cmp::PartialEq;
 use std::collections::HashMap;
 use std::convert::TryFrom;
@@ -17,24 +17,22 @@ use std::str::FromStr;
 use tempfile::TempPath;
 use thiserror::Error;
 
-// XXX convert to SmolStr
-
 /// Nix package name. Must contain a dash followed by a version
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct Package {
-    pub name: SmallString<[u8; 20]>,
+    pub name: SmolStr,
     v_idx: usize,
 }
 
 impl Package {
     #[allow(unused)]
     fn new<S: AsRef<str>>(pname: S, version: S) -> Self {
-        let mut name = SmallString::from(pname.as_ref());
+        let mut name = pname.as_ref().to_owned();
         name.push_str("-");
         name.push_str(version.as_ref());
         Self {
-            name,
+            name: SmolStr::from(name),
             v_idx: pname.as_ref().len() + 1,
         }
     }
@@ -88,7 +86,7 @@ impl FromStr for Package {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if let Some(m) = VERSION_SPLIT.find(s) {
             Ok(Self {
-                name: SmallString::from(s),
+                name: SmolStr::from(s),
                 v_idx: m.start() + 1,
             })
         } else {
@@ -124,10 +122,10 @@ impl Drv {
 }
 
 /// Nix attribute name. Can also be a dotted expression like pythonPackages.docutils
-pub type Attr = SmallString<[u8; 20]>;
+pub type Attr = SmolStr;
 
 /// Maintainer Github handle
-pub type Maintainer = SmallString<[u8; 20]>;
+pub type Maintainer = SmolStr;
 
 /// Eval'ed derivations by attribute name
 #[derive(Debug, Default, PartialEq, Eq, Clone)]
@@ -146,6 +144,7 @@ impl DrvByAttr {
             "Parsing nix-instantiate JSON output in {}",
             out_json.as_ref().display()
         );
+        // XXX serde_query?
         let json: Value = serde_json::from_reader(File::open(out_json.as_ref())?)?;
         // see fixtures/eval-release.json for expected file format
         if let Value::Object(map) = json {
@@ -157,7 +156,7 @@ impl DrvByAttr {
                             (arch, obj @ Value::Object(_)) if arch == ARCH => {
                                 if let Ok(eval) = serde_json::from_value::<Drv>(obj) {
                                     if VERSION_SPLIT.is_match(&eval.name.as_str()) {
-                                        by_attr.insert(Attr::from_str(&attr), eval);
+                                        by_attr.insert(Attr::from(&attr), eval);
                                     }
                                 }
                             }
