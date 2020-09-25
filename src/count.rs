@@ -26,10 +26,10 @@ fn count_cves(body: &str) -> usize {
     OPEN_CVE.find_iter(body).count()
 }
 
-pub async fn count(tracker: &dyn Tracker) -> Result<Counts> {
+pub fn count(tracker: &dyn Tracker) -> Result<Counts> {
     let mut counts = Counts::default();
     let r_roundup = Regex::new(r"Vulnerability roundup (\d+):").unwrap();
-    for iss in tracker.search().await? {
+    for iss in tracker.search()? {
         debug!("issue #{}: {}", iss.number, iss.title);
         if let Some(cap) = r_roundup.captures(&iss.title) {
             if let Ok(i) = cap[1].parse::<usize>() {

@@ -3,7 +3,6 @@ extern crate log;
 
 mod advisory;
 mod count;
-mod nix;
 mod package;
 mod scan;
 #[cfg(test)]
@@ -18,12 +17,10 @@ use crate::tracker::Tracker;
 use anyhow::{bail, Context, Error};
 use colored::*;
 use env_logger::Env;
-use futures::stream::{FuturesUnordered, StreamExt};
 use std::borrow::Borrow;
 use std::io::stdout;
 use std::path::{Path, PathBuf};
 use structopt::StructOpt;
-use tokio::runtime::Runtime;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -135,38 +132,19 @@ impl Roundup {
     }
 }
 
-async fn count(opt: &Opt) -> Result<()> {
+fn count(opt: &Opt) -> Result<()> {
     if opt.repo.is_none() {
         warn!("No repository given");
     }
     let tracker = create_tracker(opt)?;
     serde_json::to_writer_pretty(
         stdout().lock(),
-        &count::count(tracker.borrow())
-            .await
-            .context("Failed to search issues")?,
+        &count::count(tracker.borrow()).context("Failed to search issues")?,
     )
     .context("broken pipe")
 }
 
-async fn create(tkt: Ticket, iterdir: &Path, tracker: &dyn Tracker) -> Result<()> {
-    let name = tkt.name().to_owned();
-    let tkt = tracker
-        .create_issue(tkt)
-        .await
-        .with_context(|| format!("Failed to create issue for {}", name.purple().bold()))?;
-    tkt.write(&iterdir.join(tkt.file_name()))?;
-    Ok(())
-}
-
-// GitHub won't accept more than 30 issues in a batch
-const MAX_ISSUES: usize = 30;
-
-async fn make_issues(
-    mut tickets: Vec<Ticket>,
-    iterdir: &Path,
-    tracker: &dyn Tracker,
-) -> Result<()> {
+fn make_issues(mut tickets: Vec<Ticket>, iterdir: &Path, tracker: &dyn Tracker) -> Result<()> {
     info!("Creating issues");
     tickets.retain(|tkt| {
         if iterdir.join(tkt.file_name()).exists() {
@@ -176,22 +154,7 @@ async fn make_issues(
             true
         }
     });
-    let len = tickets.len();
-    let mut handles: FuturesUnordered<_> = tickets
-        .into_iter()
-        .take(MAX_ISSUES)
-        .map(|tkt| create(tkt, iterdir, tracker))
-        .collect();
-    while let (Some(res), remaining) = handles.into_future().await {
-        if let Err(e) = res {
-            error!("{:#}", e);
-        }
-        handles = remaining;
-    }
-    if len > MAX_ISSUES {
-        warn!("Not all issues created due to rate limits. Wait 5 minutes and rerun with '-R'");
-    }
-    Ok(())
+    Ok(tracker.create_issues(tickets, iterdir)?)
 }
 
 fn create_tracker(opt: &Opt) -> Result<Box<dyn Tracker>> {
@@ -205,7 +168,7 @@ fn create_tracker(opt: &Opt) -> Result<Box<dyn Tracker>> {
     })
 }
 
-async fn roundup(opt: &Opt, r_opt: &Roundup) -> Result<()> {
+fn roundup(opt: &Opt, r_opt: &Roundup) -> Result<()> {
     let branches = Branches::with_repo(&r_opt.branches, &r_opt.nixpkgs)?;
     let dir = r_opt.iterdir();
     let tracker = create_tracker(opt)?;
@@ -220,21 +183,21 @@ async fn roundup(opt: &Opt, r_opt: &Roundup) -> Result<()> {
     } else {
         tickets
     };
-    make_issues(tickets, &dir, tracker.borrow()).await
+    make_issues(tickets, &dir, tracker.borrow())
 }
 
-async fn run() -> Result<()> {
+fn run() -> Result<()> {
     dotenv::dotenv().ok();
     let opt = Opt::from_args();
     match opt.command {
-        Cmd::Roundup(ref r) => roundup(&opt, r).await,
-        Cmd::Count => count(&opt).await,
+        Cmd::Roundup(ref r) => roundup(&opt, r),
+        Cmd::Count => count(&opt),
     }
 }
 
 fn main() {
     env_logger::from_env(Env::default().default_filter_or("info")).init();
-    if let Err(err) = Runtime::new().unwrap().block_on(run()) {
+    if let Err(err) = run() {
         for e in err.chain() {
             error!("{}", e);
             // reqwest seems to fold all causes into its head error

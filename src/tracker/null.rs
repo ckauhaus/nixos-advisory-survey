@@ -1,7 +1,6 @@
 use super::{Issue, Tracker};
 use crate::Ticket;
-
-use async_trait::async_trait;
+use std::path::Path;
 
 pub struct Null;
 
@@ -11,13 +10,12 @@ impl Null {
     }
 }
 
-#[async_trait]
 impl Tracker for Null {
-    async fn create_issue(&self, tkt: Ticket) -> Result<Ticket, super::Error> {
-        Ok(tkt)
+    fn create_issues(&self, _tkt: Vec<Ticket>, _iterdir: &Path) -> Result<(), super::Error> {
+        Ok(())
     }
 
-    async fn search(&self) -> Result<Vec<Issue>, super::Error> {
+    fn search(&self) -> Result<Vec<Issue>, super::Error> {
         Ok(Vec::default())
     }
 }

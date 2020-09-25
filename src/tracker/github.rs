@@ -1,13 +1,13 @@
 use super::{Issue, Tracker};
 use crate::ticket::Ticket;
 
-use async_trait::async_trait;
 use clap::{crate_name, crate_version};
+use reqwest::blocking::Client;
 use reqwest::header::*;
-use reqwest::Client;
 use serde::Deserialize;
 use serde_json::json;
 use std::fmt;
+use std::path::Path;
 use std::str::FromStr;
 use thiserror::Error;
 
@@ -25,6 +25,8 @@ pub enum Error {
     RepoFormat,
     #[error("Trying to construct invalid HTTP header")]
     Header(#[from] http::header::InvalidHeaderValue),
+    #[error("Cannot write issue file for '{}' into iteration dir", 0)]
+    Write(#[source] std::io::Error, String),
 }
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -85,7 +87,7 @@ impl GitHub {
         })
     }
 
-    async fn create(&self, tkt: &Ticket) -> Result<Issue> {
+    fn create(&self, tkt: &Ticket) -> Result<Issue> {
         let res = self
             .client
             .post(&self.url_for.issues)
@@ -94,13 +96,12 @@ impl GitHub {
                 "body": tkt.to_string(),
                 "labels": vec!["1.severity: security"]
             }))
-            .send()
-            .await?;
-        let txt = res.text().await?;
+            .send()?;
+        let txt = res.text()?;
         serde_json::from_str(&txt).map_err(|e| Error::API { res: txt, e })
     }
 
-    async fn related(&self, tkt: &Ticket) -> Result<Search> {
+    fn related(&self, tkt: &Ticket) -> Result<Search> {
         let query = format!(
             "\
 repo:{} is:open label:\"1.severity: security\" in:title \"Vulnerability roundup \" \" {}: \"",
@@ -111,15 +112,13 @@ repo:{} is:open label:\"1.severity: security\" in:title \"Vulnerability roundup 
             .client
             .get(&self.url_for.search)
             .query(&[("q", query)])
-            .send()
-            .await?
+            .send()?
             .error_for_status()?
-            .text()
-            .await?;
+            .text()?;
         serde_json::from_str(&res).map_err(|e| Error::API { res, e })
     }
 
-    async fn comment(&self, number: u64, related: &[Issue]) -> Result<Comment> {
+    fn comment(&self, number: u64, related: &[Issue]) -> Result<Comment> {
         let related: Vec<String> = related.iter().map(|i| format!("#{}", i.number)).collect();
         let res = self
             .client
@@ -127,40 +126,17 @@ repo:{} is:open label:\"1.severity: security\" in:title \"Vulnerability roundup 
             .json(&json!({
                 "body": format!("See also: {}", related.join(", "))
             }))
-            .send()
-            .await?
+            .send()?
             .error_for_status()?
-            .text()
-            .await?;
+            .text()?;
         serde_json::from_str(&res).map_err(|e| Error::API { res, e })
     }
 
-    async fn search_(&self, page: usize) -> Result<Search> {
-        let query = format!(
-            "repo:{} is:open label:\"1.severity: security\" in:title \"Vulnerability roundup\"",
-            self.repo
-        );
-        let res = self
-            .client
-            .get(&self.url_for.search)
-            .query(&[("q", query), ("page", page.to_string())])
-            .send()
-            .await?
-            .error_for_status()?
-            .text()
-            .await?;
-        // debug!("GitHub: {}", res);
-        serde_json::from_str(&res).map_err(|e| Error::API { res, e })
-    }
-}
-
-#[async_trait]
-impl Tracker for GitHub {
-    async fn create_issue(&self, tkt: Ticket) -> Result<Ticket, super::Error> {
-        let c = self.create(&tkt).await?;
-        let rel = self.related(&tkt).await?;
+    fn create_and_comment(&self, tkt: Ticket) -> Result<Ticket> {
+        let c = self.create(&tkt)?;
+        let rel = self.related(&tkt)?;
         if !rel.items.is_empty() {
-            self.comment(c.number, &rel.items).await?;
+            self.comment(c.number, &rel.items)?;
         }
         Ok(Ticket {
             issue_id: Some(c.number),
@@ -169,10 +145,47 @@ impl Tracker for GitHub {
         })
     }
 
-    async fn search(&self) -> Result<Vec<Issue>, super::Error> {
+    fn search_(&self, page: usize) -> Result<Search> {
+        let query = format!(
+            "repo:{} is:open label:\"1.severity: security\" in:title \"Vulnerability roundup\"",
+            self.repo
+        );
+        let res = self
+            .client
+            .get(&self.url_for.search)
+            .query(&[("q", query), ("page", page.to_string())])
+            .send()?
+            .error_for_status()?
+            .text()?;
+        // debug!("GitHub: {}", res);
+        serde_json::from_str(&res).map_err(|e| Error::API { res, e })
+    }
+}
+
+// GitHub won't accept more than 30 issues in a batch
+const MAX_ISSUES: usize = 30;
+
+impl Tracker for GitHub {
+    fn create_issues(&self, tickets: Vec<Ticket>, iterdir: &Path) -> Result<(), super::Error> {
+        let len = tickets.len();
+        for tkt in tickets.into_iter().take(MAX_ISSUES) {
+            match self.create_and_comment(tkt) {
+                Ok(updated) => updated
+                    .write(&iterdir)
+                    .map_err(|e| Error::Write(e, updated.name().to_string()))?,
+                Err(e) => error!("{:#}", e),
+            }
+        }
+        if len > MAX_ISSUES {
+            warn!("Not all issues created due to rate limits. Wait 5 minutes and rerun with '-R'");
+        }
+        Ok(())
+    }
+
+    fn search(&self) -> Result<Vec<Issue>, super::Error> {
         let mut iss = Vec::new();
         for page in 1..100 {
-            let mut s = self.search_(page).await?;
+            let mut s = self.search_(page)?;
             iss.append(&mut s.items);
             if iss.len() >= s.total_count {
                 break;

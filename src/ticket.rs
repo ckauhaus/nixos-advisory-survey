@@ -1,9 +1,10 @@
 use crate::advisory::Advisory;
-use crate::package::{Maintainer, Package};
+use crate::package::{maintainer_contacts, Maintainer, Package};
 use crate::scan::{Branch, ScanByBranch, ScoreMap};
 
 use colored::*;
 use ordered_float::OrderedFloat;
+use serde::Serialize;
 use smol_str::SmolStr;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
@@ -12,12 +13,12 @@ use std::format_args;
 use std::fs;
 use std::io::BufWriter;
 use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Abstract ticket/issue representation.
 ///
 /// This will be picked up by tracker/* to create a concrete issue.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize)]
 pub struct Ticket {
     pub iteration: u32,
     pub pkg: Package,
@@ -37,11 +38,6 @@ impl Ticket {
         }
     }
 
-    /// Local file name (excluding directory)
-    pub fn file_name(&self) -> PathBuf {
-        PathBuf::from(format!("ticket.{}.md", self.pkg.name))
-    }
-
     /// Package name + version
     pub fn name(&self) -> &str {
         &self.pkg.name
@@ -52,19 +48,30 @@ impl Ticket {
         &self.pkg.pname()
     }
 
+    /// Local file name of the main issue file (excluing dir)
+    pub fn file_name(&self) -> String {
+        format!("ticket.{}.json", self.pkg.name)
+    }
+
     /// Writes ticket to disk, optionally with a pointer to a tracker issue
-    pub fn write<P: AsRef<Path>>(&self, file_name: P) -> io::Result<()> {
+    pub fn write(&self, iterdir: &Path) -> io::Result<()> {
         let inum = match self.issue_id {
             Some(id) => format!("issue #{}, ", id.to_string().green()),
             None => "".to_owned(),
         };
+        let file_name = self.file_name();
         info!(
             "{}: {}file {}",
             self.name().yellow(),
             inum,
-            self.file_name().to_string_lossy().green()
+            file_name.green()
         );
-        write!(BufWriter::new(fs::File::create(file_name)?), "{:#}", self)?;
+        serde_json::to_writer(
+            BufWriter::new(fs::File::create(iterdir.join(file_name))?),
+            self,
+        )?;
+        let cleartext = iterdir.join(format!("ticket.{}.md", self.pkg.name));
+        write!(BufWriter::new(fs::File::create(cleartext)?), "{:#}", self)?;
         Ok(())
     }
 
@@ -122,8 +129,8 @@ impl fmt::Display for Ticket {
         relevant.sort();
         relevant.dedup();
         writeln!(f, "\nScanned versions: {}.\n", relevant.join("; "))?;
-        for m in &self.maintainers {
-            writeln!(f, "Cc @{}", m)?;
+        for contact in maintainer_contacts(&self.maintainers) {
+            writeln!(f, "Cc @{}", contact)?;
         }
         if let Some(url) = &self.issue_url {
             writeln!(f, "<!-- {} -->", url)?;
@@ -132,7 +139,7 @@ impl fmt::Display for Ticket {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, Default, PartialEq, PartialOrd, Serialize)]
 pub struct Detail {
     branches: Vec<Branch>,
     score: Option<OrderedFloat<f32>>,
@@ -399,7 +406,7 @@ Scanned versions: br0: 5d4a1a3897e; br1: 80738ed9dc0.\n\n\
             iteration: 3,
             pkg: pkg("libtiff-4.0.9"),
             affected: hashmap! { adv("CVE-2018-17000") => det_br(&[&b], None) },
-            maintainers: vec!["ericson2314".into()],
+            maintainers: vec![Maintainer::new("ericson2314")],
             ..Ticket::default()
         };
         // should be sorted by score in decreasing order, undefined scores last

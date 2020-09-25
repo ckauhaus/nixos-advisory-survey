@@ -1,6 +1,5 @@
 use crate::advisory::Advisory;
-use crate::nix::{self, Ping};
-use crate::package::{Attr, Maintainer, Package};
+use crate::package::{AllPackages, Attr, Maintainer, Package, PkgInfo};
 use crate::Roundup;
 
 use anyhow::{bail, ensure, Context, Result};
@@ -9,15 +8,15 @@ use git2::Repository;
 use lazy_static::lazy_static;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use smallstr::SmallString;
+use smol_str::SmolStr;
 use std::collections::HashMap;
 use std::fmt;
 use std::fs::{self, File};
 use std::io::BufWriter;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::str::FromStr;
-use subprocess::{Exec, ExitStatus::*};
 use thiserror::Error;
 
 pub type ScoreMap = HashMap<Advisory, f32>;
@@ -30,12 +29,12 @@ pub type ScoreMap = HashMap<Advisory, f32>;
 pub struct VulnixRes {
     #[serde(rename = "name")]
     pub pkg: Package,
-    pub pname: SmallString<[u8; 20]>,
-    pub version: SmallString<[u8; 20]>,
+    pub pname: SmolStr,
+    pub version: SmolStr,
     pub derivation: String,
     pub affected_by: Vec<Advisory>,
     #[serde(default)]
-    pub whitelisted: Vec<SmallString<[u8; 20]>>,
+    pub whitelisted: Vec<SmolStr>,
     #[serde(default)]
     pub cvssv3_basescore: ScoreMap,
     #[serde(default)]
@@ -43,7 +42,7 @@ pub struct VulnixRes {
 }
 
 impl VulnixRes {
-    #[allow(unused)]
+    #[allow(dead_code)]
     pub fn new(pkg: Package, affected_by: Vec<Advisory>) -> Self {
         let pname = pkg.pname().into();
         let version = pkg.version().into();
@@ -56,10 +55,12 @@ impl VulnixRes {
         }
     }
 
-    fn augment(mut self, maint: &HashMap<Attr, Ping>) -> Self {
-        for ping in maint.values() {
-            if ping.name == self.pkg {
-                self.maintainers.extend(ping.maintainers.clone());
+    fn augment(mut self, pkginfo: &HashMap<Attr, PkgInfo>) -> Self {
+        for pi in pkginfo.values() {
+            // unfortunately we don't have the attrname in vulnix' output, so we must search for
+            // the package
+            if pi.name == self.pkg.name {
+                self.maintainers.extend_from_slice(&pi.meta.maintainers);
             }
         }
         self
@@ -68,19 +69,19 @@ impl VulnixRes {
 
 /// NixOS release to scan. Note that the git rev/branch may have a different name than the release
 /// name we publish.
-#[derive(Debug, Clone, Default, Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Default, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct Branch {
     /// NixOS release name to publish in tickets
-    pub name: SmallString<[u8; 20]>,
+    pub name: SmolStr,
     /// git parseable revspec, usually a branch name
-    pub rev: SmallString<[u8; 20]>,
+    pub rev: SmolStr,
 }
 
 impl Branch {
     pub fn new(name: &str) -> Self {
         Self {
-            name: SmallString::from_str(name),
-            rev: SmallString::from_str(name),
+            name: SmolStr::from(name),
+            rev: SmolStr::from(name),
         }
     }
 
@@ -90,10 +91,10 @@ impl Branch {
             self.name.green().bold(),
             self.rev[0..11].yellow()
         );
-        let status = Exec::cmd("git")
+        let status = Command::new("git")
             .args(&["checkout", "-q", &self.rev])
-            .cwd(repo)
-            .join()
+            .current_dir(repo)
+            .status()
             .context("Cannot execute git")?;
         ensure!(
             status.success(),
@@ -109,21 +110,27 @@ impl Branch {
     fn run_vulnix<P: AsRef<Path>>(&self, drvlist: P, opt: &Roundup) -> Result<Vec<VulnixRes>> {
         info!("Scanning derivations from {}", drvlist.as_ref().display());
         let full_wl = opt.whitelist_dir.join(format!("{}.toml", self.name));
-        let cmd = Exec::cmd(&opt.vulnix)
-            .args(&["-j", "-R", "-w"])
+        let mut cmd = Command::new(&opt.vulnix);
+        cmd.args(&["-j", "-R", "-w"])
             .arg(&full_wl)
             .arg("-W")
             .arg(&full_wl)
             .arg("-f")
             .arg(drvlist.as_ref());
-        debug!("{}", cmd.to_cmdline_lossy().purple());
-        let c = cmd.capture().context("Failed to read stdout from vulnix")?;
-        match c.exit_status {
-            Exited(e) if e <= 2 => (),
-            _ => bail!("vulnix failed with exit status {:?}", c.exit_status),
-        }
-        serde_json::from_slice(&c.stdout)
-            .with_context(|| format!("Cannot parse vulnix JSON output: {:?}", &c.stdout))
+        debug!("{}", format!("{:?}", cmd).purple());
+        let c = cmd.output().context("Failed to read stdout from vulnix")?;
+        ensure!(
+            c.status.code().unwrap_or(127) <= 2,
+            "vulnix failed with {}: {}",
+            c.status,
+            String::from_utf8_lossy(&c.stdout)
+        );
+        serde_json::from_slice(&c.stdout).with_context(|| {
+            format!(
+                "Cannot parse vulnix JSON output: {}",
+                String::from_utf8_lossy(&c.stdout)
+            )
+        })
     }
 }
 
@@ -172,13 +179,13 @@ fn resolve_rev(rev: &str, repo: &Repository) -> Result<String> {
 
 fn postprocess(
     scan: Vec<VulnixRes>,
-    maintainers: &HashMap<Attr, Ping>,
+    all_pkgs: &AllPackages,
     out_json: &Path,
 ) -> Result<Vec<VulnixRes>> {
     // add maintainers for each scan result
     let scan = scan
         .into_iter()
-        .map(|res| res.augment(maintainers))
+        .map(|res| res.augment(&all_pkgs.packages))
         .collect();
     // save for future reference
     serde_json::to_writer(BufWriter::new(File::create(out_json)?), &scan)
@@ -217,7 +224,7 @@ impl Branches {
         };
         let repo = Repository::open(repo).context("Cannot open repository")?;
         for mut b in bs.specs.iter_mut() {
-            b.rev = SmallString::from(resolve_rev(b.rev.as_str(), &repo)?);
+            b.rev = SmolStr::from(resolve_rev(b.rev.as_str(), &repo)?);
         }
         Ok(bs)
     }
@@ -243,6 +250,7 @@ impl Branches {
 
     /// Checks out all specified branches in turn, instantiates the release derivation and invokes
     /// vulnix on it. Figures out maintainers for affected packages.
+    /// Returns [`ScanByBranch`] struct which is fed into [`ticket_list`].
     pub fn scan(&self, opt: &Roundup) -> Result<ScanByBranch> {
         let repo = self
             .repo
@@ -253,27 +261,17 @@ impl Branches {
         let mut sbb = ScanByBranch::new();
         for branch in self.iter() {
             branch.checkout(repo)?;
-            let attrs = nix::all_derivations(repo)?;
-            nix::ensure_drvs_exist(repo, &attrs)?;
-            let drvlist = attrs.dump_drvlist()?;
+            let all_pkgs = AllPackages::query(repo).context("nix-build packages.json failed")?;
+            let drvlist = all_pkgs.ensure_drvs(repo)?;
             let scan_res = branch.run_vulnix(&drvlist, opt).with_context(|| {
                 format!(
                     "Scan failed - retaining derivation list in {:?}",
                     drvlist.keep().unwrap()
                 )
             })?;
-            let maintainers = nix::collect_maintainers(
-                repo,
-                attrs
-                    .iter()
-                    .filter(|(_, drv)| scan_res.iter().any(|res| res.pkg == drv.name))
-                    .map(|(k, _v)| k),
-            )
-            .context("Error while querying package maintainers")?;
-            debug!("Collected maintainers: {:?}", maintainers);
             sbb.insert(
                 branch.clone(),
-                postprocess(scan_res, &maintainers, &opt.vulnix_json(&branch.name))?,
+                postprocess(scan_res, &all_pkgs, &opt.vulnix_json(&branch.name))?,
             );
         }
         Ok(sbb)
@@ -293,7 +291,8 @@ impl Deref for Branches {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::tests::{br, create_branches, pkg};
+    use crate::package::maintainer_contacts;
+    use crate::tests::{br, create_branches};
 
     use libflate::gzip;
     use std::error::Error;
@@ -412,32 +411,24 @@ mod test {
         let scan = serde_json::from_str(include_str!(
             "../fixtures/iterations/1/vulnix.nixos-unstable.json"
         ))?;
-        let maint = serde_json::from_str(include_str!("../fixtures/maintainers.nix.json"))?;
+        let all = serde_json::from_str(include_str!("../fixtures/packages.json"))?;
         let t = TempDir::new()?;
         let tp = t.path();
         eprintln!("{:?}", tp);
         serde_json::to_writer(File::create(tp.join("before.json"))?, &scan).unwrap();
-        let scan = postprocess(scan, &maint, &tp.join("postprocess.json"))?;
+        let scan = postprocess(scan, &all, &tp.join("postprocess.json"))?;
         // verify that postprocess.json contains all the data
         assert_eq!(
             scan,
             serde_json::from_reader::<_, Vec<VulnixRes>>(File::open(tp.join("postprocess.json"))?)?
         );
         assert_eq!(&scan[1].pkg, "ncurses-6.1");
-        assert_eq!(scan[1].maintainers, &["andir", "edolstra"]);
-        assert_eq!(&scan[2].pkg, "binutils-2.30");
-        assert_eq!(scan[2].maintainers, &["ericson2314"]);
-        Ok(())
-    }
-
-    #[test]
-    fn augment_maintainers() {
-        let maint: HashMap<Attr, Ping> =
-            serde_json::from_str(&include_str!("../fixtures/maintainers.nix.json")).unwrap();
-        let res = VulnixRes::new(pkg("ncurses-6.1"), vec![]);
         assert_eq!(
-            res.augment(&maint).maintainers,
-            &[Maintainer::from("andir"), Maintainer::from("edolstra")]
+            maintainer_contacts(&scan[1].maintainers),
+            &["andir", "edolstra"]
         );
+        assert_eq!(&scan[2].pkg, "binutils-2.30");
+        assert_eq!(maintainer_contacts(&scan[2].maintainers), &["ericson2314"]);
+        Ok(())
     }
 }

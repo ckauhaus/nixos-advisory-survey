@@ -1,0 +1,150 @@
+{
+  "commit": "0000000",
+  "packages": {
+    "libtasn1": {
+      "name": "libtasn1-4.13",
+      "pname": "libtasn1",
+      "version": "4.13",
+      "system": "x86_64-linux",
+      "meta": {
+        "available": true,
+        "description": "An ASN.1 library",
+        "homepage": "https://www.gnu.org/software/libtasn1/",
+        "license": {
+          "fullName": "GNU Library General Public License v2 or later",
+          "shortName": "lgpl2Plus",
+          "spdxId": "LGPL-2.0-or-later",
+          "url": "http://spdx.org/licenses/LGPL-2.0-or-later.html"
+        },
+        "name": "libtasn1-4.13",
+        "outputsToInstall": [
+          "out"
+        ],
+        "platforms": [
+          {}
+        ],
+        "position": "pkgs/development/libraries/libtasn1/default.nix:20"
+      }
+    },
+    "ncurses": {
+      "name": "ncurses-6.1",
+      "pname": "ncurses",
+      "version": "6.1",
+      "system": "x86_64-linux",
+      "meta": {
+        "available": true,
+        "description": "Free software emulation of curses in SVR4 and more",
+        "homepage": "https://www.gnu.org/software/ncurses/",
+        "license": {
+          "fullName": "MIT License",
+          "shortName": "mit",
+          "spdxId": "MIT",
+          "url": "http://spdx.org/licenses/MIT.html"
+        },
+        "maintainers": [
+          { "github": "andir" },
+          { "github": "edolstra" }
+        ],
+        "name": "ncurses-6.1",
+        "outputsToInstall": [
+          "out",
+          "man"
+        ],
+        "platforms": [
+          {}
+        ],
+        "position": "pkgs/development/libraries/ncurses/default.nix:151"
+      }
+    },
+    "binutils": {
+      "name": "binutils-2.30",
+      "pname": "binutils",
+      "version": "2.30",
+      "system": "x86_64-linux",
+      "meta": {
+        "available": true,
+        "description": "Tools for manipulating binaries (linker, assembler, etc.) (wrapper script)",
+        "homepage": "https://www.gnu.org/software/binutils/",
+        "license": {
+          "fullName": "GNU General Public License v3.0 or later",
+          "shortName": "gpl3Plus",
+          "spdxId": "GPL-3.0-or-later",
+          "url": "http://spdx.org/licenses/GPL-3.0-or-later.html"
+        },
+        "maintainers": [
+          {
+            "email": "John.Ericson@Obsidian.Systems",
+            "github": "ericson2314",
+            "name": "John Ericson"
+          }
+        ],
+        "name": "binutils-2.31.1",
+        "outputsToInstall": [
+          "out",
+          "man"
+        ],
+        "platforms": [
+          {
+            "kernel": {
+              "families": {
+                "bsd": {
+                  "_type": "exec-format",
+                  "name": "bsd"
+                }
+              }
+            }
+          },
+          {
+            "kernel": {
+              "families": {
+                "darwin": {
+                  "_type": "exec-format",
+                  "name": "darwin"
+                }
+              }
+            }
+          },
+          {
+            "kernel": {
+              "_type": "kernel",
+              "execFormat": {
+                "_type": "exec-format",
+                "name": "elf"
+              },
+              "families": {},
+              "name": "linux"
+            }
+          },
+          {
+            "kernel": {
+              "_type": "kernel",
+              "execFormat": {
+                "_type": "exec-format",
+                "name": "elf"
+              },
+              "families": {},
+              "name": "solaris"
+            }
+          },
+          {
+            "abi": {
+              "_type": "abi",
+              "name": "cygnus"
+            },
+            "kernel": {
+              "_type": "kernel",
+              "execFormat": {
+                "_type": "exec-format",
+                "name": "pe"
+              },
+              "families": {},
+              "name": "windows"
+            }
+          }
+        ],
+        "position": "pkgs/build-support/bintools-wrapper/default.nix:327",
+        "priority": 10
+      }
+    }
+  }
+}

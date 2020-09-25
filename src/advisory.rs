@@ -1,7 +1,7 @@
 use lazy_static::lazy_static;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use smallstr::SmallString;
+use smol_str::SmolStr;
 use std::cmp::{Ord, Ordering, PartialOrd};
 use std::convert::TryFrom;
 use std::fmt;
@@ -17,7 +17,7 @@ lazy_static! {
 /// Securty advisory identifier. Currently only CVEs are supported.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String")]
-pub struct Advisory(SmallString<[u8; 20]>);
+pub struct Advisory(SmolStr);
 
 impl Advisory {
     /// Represent myself as numeric tuple if possible. This is needed for sorting CVEs.

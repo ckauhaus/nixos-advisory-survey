@@ -3,10 +3,10 @@ mod null;
 
 use crate::ticket::Ticket;
 
-use async_trait::async_trait;
 pub use github::GitHub;
 pub use null::Null;
 use serde::Deserialize;
+use std::path::Path;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -26,11 +26,10 @@ pub struct Issue {
     pub body: String,
 }
 
-#[async_trait]
 pub trait Tracker {
-    /// Create issue and return possibly modified ticket
-    async fn create_issue(&self, tkt: Ticket) -> Result<Ticket, Error>;
+    /// Creates as many issues as rate limits allow
+    fn create_issues(&self, tkt: Vec<Ticket>, iterdir: &Path) -> Result<(), Error>;
 
     /// Returns all open isssues
-    async fn search(&self) -> Result<Vec<Issue>, Error>;
+    fn search(&self) -> Result<Vec<Issue>, Error>;
 }
