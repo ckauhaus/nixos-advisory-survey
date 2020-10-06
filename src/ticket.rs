@@ -1,19 +1,13 @@
 use crate::advisory::Advisory;
-use crate::package::{maintainer_contacts, Maintainer, Package};
-use crate::scan::{Branch, ScanByBranch, ScoreMap};
+use crate::branches::{Branch, ScanByBranch};
+use crate::scan::ScoreMap;
+use crate::source::{maintainer_contacts, Maintainer, Package};
 
-use colored::*;
 use ordered_float::OrderedFloat;
 use serde::Serialize;
-use smol_str::SmolStr;
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fmt;
-use std::format_args;
-use std::fs;
-use std::io::BufWriter;
-use std::io::{self, Write};
-use std::path::Path;
 
 /// Abstract ticket/issue representation.
 ///
@@ -23,8 +17,6 @@ pub struct Ticket {
     pub iteration: u32,
     pub pkg: Package,
     pub affected: HashMap<Advisory, Detail>,
-    pub issue_id: Option<u64>,
-    pub issue_url: Option<String>,
     pub maintainers: Vec<Maintainer>,
 }
 
@@ -48,33 +40,6 @@ impl Ticket {
         &self.pkg.pname()
     }
 
-    /// Local file name of the main issue file (excluing dir)
-    pub fn file_name(&self) -> String {
-        format!("ticket.{}.json", self.pkg.name)
-    }
-
-    /// Writes ticket to disk, optionally with a pointer to a tracker issue
-    pub fn write(&self, iterdir: &Path) -> io::Result<()> {
-        let inum = match self.issue_id {
-            Some(id) => format!("issue #{}, ", id.to_string().green()),
-            None => "".to_owned(),
-        };
-        let file_name = self.file_name();
-        info!(
-            "{}: {}file {}",
-            self.name().yellow(),
-            inum,
-            file_name.green()
-        );
-        serde_json::to_writer(
-            BufWriter::new(fs::File::create(iterdir.join(file_name))?),
-            self,
-        )?;
-        let cleartext = iterdir.join(format!("ticket.{}.md", self.pkg.name));
-        write!(BufWriter::new(fs::File::create(cleartext)?), "{:#}", self)?;
-        Ok(())
-    }
-
     /// Ticket headline
     pub fn summary(&self) -> String {
         let num = self.affected.len();
@@ -93,15 +58,8 @@ impl Ticket {
     pub fn max_score(&self) -> Option<OrderedFloat<f32>> {
         self.affected.values().filter_map(|d| d.score).max()
     }
-}
 
-impl fmt::Display for Ticket {
-    /// Normal Display: only ticket body
-    /// Alternate Display: headline + body
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if f.alternate() {
-            writeln!(f, "{}\n", self.summary())?;
-        }
+    pub fn render<W: fmt::Write>(&self, f: &mut W, notify: bool) -> fmt::Result {
         writeln!(
             f,
             "\
@@ -129,13 +87,25 @@ impl fmt::Display for Ticket {
         relevant.sort();
         relevant.dedup();
         writeln!(f, "\nScanned versions: {}.\n", relevant.join("; "))?;
-        for contact in maintainer_contacts(&self.maintainers) {
-            writeln!(f, "Cc @{}", contact)?;
-        }
-        if let Some(url) = &self.issue_url {
-            writeln!(f, "<!-- {} -->", url)?;
+        if notify {
+            for contact in maintainer_contacts(&self.maintainers) {
+                writeln!(f, "Cc @{}", contact)?;
+            }
         }
         Ok(())
+    }
+}
+
+impl fmt::Display for Ticket {
+    /// Normal Display: only ticket body
+    /// Alternate Display: headline + body
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if f.alternate() {
+            writeln!(f, "# {}\n", self.summary())?;
+            self.render(f, true)
+        } else {
+            self.render(f, false)
+        }
     }
 }
 
@@ -148,7 +118,7 @@ pub struct Detail {
 impl Detail {
     fn new(score: Option<f32>) -> Self {
         Self {
-            score: score.map(|s| OrderedFloat(s)),
+            score: score.map(OrderedFloat),
             ..Default::default()
         }
     }
@@ -179,22 +149,18 @@ fn cmp_score(a: &(&Advisory, &Detail), b: &(&Advisory, &Detail)) -> Ordering {
 }
 
 /// One ticket per package, containing scan results for all branches
-pub fn ticket_list(iteration: u32, scan_res: ScanByBranch, ping_maintainers: bool) -> Vec<Ticket> {
+pub fn ticket_list(iteration: u32, scan_res: ScanByBranch) -> Vec<Ticket> {
     let mut scores = ScoreMap::default();
+    // Maintainership may change across branches. Collect & notify all maintainers.
     let mut maintmap: HashMap<Package, Vec<Maintainer>> = HashMap::new();
-    // Step 1: for each pkg, list all pairs (advisory, branch) in random order
+    // Step 1: for each pkg, record all pairs (advisory, branch)
     let mut pkgmap: HashMap<Package, Vec<(Advisory, Branch)>> = HashMap::new();
     for (branch, scan_results) in scan_res {
         for res in scan_results {
-            if ping_maintainers {
-                if let Some(e) = maintmap.get_mut(&res.pkg) {
-                    e.extend(res.maintainers);
-                } else {
-                    maintmap.insert(res.pkg.clone(), res.maintainers.clone());
-                }
-            }
-            let e = pkgmap.entry(res.pkg).or_insert_with(Vec::new);
-            e.extend(res.affected_by.into_iter().map(|adv| (adv, branch.clone())));
+            let m = maintmap.entry(res.pkg.clone()).or_insert_with(Vec::new);
+            m.extend(res.maintainers);
+            let p = pkgmap.entry(res.pkg).or_insert_with(Vec::new);
+            p.extend(res.affected_by.into_iter().map(|adv| (adv, branch.clone())));
             scores.extend(res.cvssv3_basescore);
         }
     }
@@ -223,55 +189,6 @@ pub fn ticket_list(iteration: u32, scan_res: ScanByBranch, ping_maintainers: boo
     tickets
 }
 
-#[derive(Debug, Default)]
-pub struct Applicable {
-    known: HashSet<SmolStr>,
-}
-
-impl Applicable {
-    fn from_store_path(sp: &str) -> Option<&str> {
-        let sp = sp.trim();
-        match sp.len() {
-            0 => None,
-            x if x > 44 && &sp[43..44] == "-" => Some(&sp[44..]),
-            x if x > 33 && &sp[32..33] == "-" => Some(&sp[33..]),
-            _ => Some(sp),
-        }
-    }
-
-    fn extract_derivations(storedump: &str) -> impl Iterator<Item = SmolStr> + '_ {
-        static STRIP_OUTPUTS: &[&str] = &["-dev", "-bin", "-out", "-lib", "-ga"];
-        storedump.lines().filter_map(|line| {
-            if let Some(deriv) = Self::from_store_path(line) {
-                for suffix in STRIP_OUTPUTS {
-                    if deriv.ends_with(suffix) {
-                        return Some(SmolStr::new(&deriv[..(deriv.len() - suffix.len())]));
-                    }
-                }
-                Some(SmolStr::new(deriv))
-            } else {
-                None
-            }
-        })
-    }
-
-    pub fn new(dir: &Path) -> Result<Self, io::Error> {
-        let mut known: HashSet<SmolStr> = HashSet::new();
-        for entry in fs::read_dir(dir)? {
-            let e = entry?;
-            if e.file_type()?.is_file() && &e.file_name().to_string_lossy()[0..1] != "." {
-                known.extend(Self::extract_derivations(&fs::read_to_string(&e.path())?))
-            }
-        }
-        Ok(Self { known })
-    }
-
-    pub fn filter(&self, mut tickets: Vec<Ticket>) -> Vec<Ticket> {
-        tickets.retain(|t| self.known.contains(t.pkg.as_str()));
-        tickets
-    }
-}
-
 // === Tests ===
 
 #[cfg(test)]
@@ -281,7 +198,6 @@ mod test {
     use crate::tests::{adv, br, create_branches, pkg};
 
     use maplit::hashmap;
-    use tempfile::TempDir;
 
     /// Helpers for quick construction of Detail structs
     fn det(branches: &[&str], score: Option<f32>) -> Detail {
@@ -308,7 +224,7 @@ mod test {
             ]
         };
         assert_eq!(
-            ticket_list(1, scan, false),
+            ticket_list(1, scan),
             &[
                 Ticket {
                     iteration: 1,
@@ -350,7 +266,7 @@ mod test {
             }],
         };
         assert_eq!(
-            ticket_list(2, scan, false),
+            ticket_list(2, scan),
             &[Ticket {
                 iteration: 2,
                 pkg: pkg("libtiff-4.0.9"),
@@ -385,7 +301,7 @@ mod test {
         assert_eq!(
             out,
             "\
-Vulnerability roundup 2: libtiff-4.0.9: 3 advisories [8.8]\n\
+# Vulnerability roundup 2: libtiff-4.0.9: 3 advisories [8.8]\n\
 \n\
 [search](https://search.nix.gsc.io/?q=libtiff&i=fosho&repos=NixOS-nixpkgs), \
 [files](https://github.com/NixOS/nixpkgs/search?utf8=%E2%9C%93&q=libtiff+in%3Apath&type=Code)\n\
@@ -483,66 +399,5 @@ Scanned versions: br0: 5d4a1a3897e; br1: 80738ed9dc0.\n\n\
             ..Ticket::default()
         };
         assert_eq!(tkt.max_score().unwrap().into_inner(), 9.8);
-    }
-
-    #[test]
-    fn applicable_should_contain_derivations() {
-        let a = Applicable::new(&Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/storepaths"))
-            .expect("failed to create Applicable instance");
-        assert!(a.known.contains("zsh-5.7.1")); // from vm4
-        assert!(a.known.contains("nspr-4.21")); // from vm5
-        assert!(a.known.contains("nodejs-8.15.1")); // from vm9
-    }
-
-    #[test]
-    fn filter_relevant() {
-        let td = TempDir::new().unwrap();
-        // libtiff-4.0.8 is not present on any vm
-        let t1 = Ticket {
-            pkg: pkg("libtiff-4.0.8"),
-            ..Ticket::default()
-        };
-        let res = Applicable::new(td.path()).unwrap().filter(vec![t1.clone()]);
-        assert_eq!(res, vec![]);
-
-        // net-snmp-5.8 is present on vm4 (without prefix)
-        let t2 = Ticket {
-            pkg: pkg("net-snmp-5.8"),
-            ..Ticket::default()
-        };
-        // boehm-gc-8.0.2 is present on vm5 (with Nix hash prefix)
-        let t3 = Ticket {
-            pkg: pkg("boehm-gc-8.0.2"),
-            ..Ticket::default()
-        };
-        // gdbm-1.18.1 is present on vm9 (with full Nix store prefix)
-        let t4 = Ticket {
-            pkg: pkg("gdbm-1.18.1"),
-            ..Ticket::default()
-        };
-        let a = Applicable::new(&Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/storepaths"))
-            .expect("failed to create Applicable instance");
-        let res = a.filter([&t1, &t2, &t3, &t4].iter().map(|&t| t.clone()).collect());
-        assert_eq!(res, vec![t2.clone(), t3.clone(), t4.clone()]);
-    }
-
-    #[test]
-    fn strip_output_suffix() {
-        let storedump = "\
-w43m4jsawvibjx5r20rx26h19hxkq5dg-db-5.3.28-bin
-/nix/store/1yqbpsfyqcamlr79jzsh1cpd2pkv1858-unbound-1.9.0-lib
-util-linux-2.33.1-dev
-zsh-5.7.1
-        ";
-        let derivs: Vec<_> = Applicable::extract_derivations(storedump).collect();
-        assert_eq!(
-            vec![
-                "db-5.3.28",
-                "unbound-1.9.0",
-                "util-linux-2.33.1",
-                "zsh-5.7.1"
-            ],
-            derivs
-        );
     }
 }

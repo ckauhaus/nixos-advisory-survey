@@ -2,20 +2,21 @@
 extern crate log;
 
 mod advisory;
+mod branches;
 mod count;
-mod package;
+mod filter;
 mod scan;
+mod source;
 #[cfg(test)]
 mod tests;
 mod ticket;
 mod tracker;
 
-use crate::scan::{Branch, Branches};
-use crate::ticket::{Applicable, Ticket};
+use crate::branches::{Branch, Branches};
+use crate::ticket::Ticket;
 use crate::tracker::Tracker;
 
 use anyhow::{bail, Context, Error};
-use colored::*;
 use env_logger::Env;
 use std::borrow::Borrow;
 use std::io::stdout;
@@ -32,6 +33,15 @@ type Result<T, E = Error> = std::result::Result<T, E>;
     "
 )]
 pub struct Opt {
+    /// Base directory for vulnix JSON outputs and tickets (excluding iteration subdir)
+    #[structopt(
+        short = "o",
+        long = "outdir",
+        value_name = "DIR",
+        default_value = "iterations",
+        parse(from_os_str)
+    )]
+    basedir: PathBuf,
     /// Create GitHub issues in this repository
     #[structopt(short, long, global = true, value_name = "USER/REPO")]
     repo: Option<String>,
@@ -50,6 +60,7 @@ impl Default for Opt {
             repo: None,
             github_token: None,
             command: Cmd::Roundup(Roundup::default()),
+            basedir: PathBuf::from("iterations"),
         }
     }
 }
@@ -73,15 +84,6 @@ pub struct Roundup {
         parse(from_os_str)
     )]
     nixpkgs: PathBuf,
-    /// Base directory for vulnix JSON outputs and tickets (excluding iteration subdir)
-    #[structopt(
-        short = "o",
-        long = "outdir",
-        value_name = "DIR",
-        default_value = "iterations",
-        parse(from_os_str)
-    )]
-    basedir: PathBuf,
     /// Directory for updated whitelists
     #[structopt(
         short = "w",
@@ -107,8 +109,8 @@ pub struct Roundup {
     #[structopt(short = "m", long)]
     ping_maintainers: bool,
     /// Only consider packages found in at least one Nix store dump in DIR
-    #[structopt(short = "f", long, value_name = "DIR", parse(from_os_str))]
-    filter_dir: Option<PathBuf>,
+    #[structopt(short, long, value_name = "DIR", parse(from_os_str))]
+    filter: Option<PathBuf>,
     /// Nth survey iteration
     #[structopt(value_name = "N")]
     iteration: u32,
@@ -121,14 +123,9 @@ pub struct Roundup {
 }
 
 impl Roundup {
-    /// Constructs per-iteration directory from basedir and iteration number.
-    fn iterdir(&self) -> PathBuf {
-        self.basedir.join(self.iteration.to_string())
-    }
-
-    /// Full path to JSON file containing vulnix scan results
-    fn vulnix_json(&self, branch: &str) -> PathBuf {
-        self.iterdir().join(format!("vulnix.{}.json", branch))
+    /// Full path to this iterations data dir
+    fn iterdir(&self, base: &Path) -> PathBuf {
+        base.join(self.iteration.to_string())
     }
 }
 
@@ -136,7 +133,7 @@ fn count(opt: &Opt) -> Result<()> {
     if opt.repo.is_none() {
         warn!("No repository given");
     }
-    let tracker = create_tracker(opt)?;
+    let tracker = create_tracker(opt, false)?;
     serde_json::to_writer_pretty(
         stdout().lock(),
         &count::count(tracker.borrow()).context("Failed to search issues")?,
@@ -144,46 +141,36 @@ fn count(opt: &Opt) -> Result<()> {
     .context("broken pipe")
 }
 
-fn make_issues(mut tickets: Vec<Ticket>, iterdir: &Path, tracker: &dyn Tracker) -> Result<()> {
-    info!("Creating issues");
-    tickets.retain(|tkt| {
-        if iterdir.join(tkt.file_name()).exists() {
-            info!("{}: skipping, file exists", tkt.name().yellow());
-            false
-        } else {
-            true
-        }
-    });
-    Ok(tracker.create_issues(tickets, iterdir)?)
-}
-
-fn create_tracker(opt: &Opt) -> Result<Box<dyn Tracker>> {
+fn create_tracker(opt: &Opt, ping_maintainers: bool) -> Result<Box<dyn Tracker>> {
     Ok(match (&opt.repo, &opt.github_token) {
-        (Some(repo), Some(token)) => Box::new(tracker::GitHub::new(token.to_string(), repo)?),
+        (Some(repo), Some(token)) => Box::new(tracker::GitHub::new(
+            token.to_string(),
+            repo,
+            ping_maintainers,
+        )?),
         (Some(_), None) => bail!(
             "No Github access token given either as option or via the GITHUB_TOKEN environment \
              variable"
         ),
-        (_, _) => Box::new(tracker::Null::new()),
+        (_, _) => Box::new(tracker::File::new()),
     })
 }
 
 fn roundup(opt: &Opt, r_opt: &Roundup) -> Result<()> {
     let branches = Branches::with_repo(&r_opt.branches, &r_opt.nixpkgs)?;
-    let dir = r_opt.iterdir();
-    let tracker = create_tracker(opt)?;
+    let tracker = create_tracker(opt, r_opt.ping_maintainers)?;
+    let iterdir = r_opt.iterdir(&opt.basedir);
     let sbb = if r_opt.no_run {
-        branches.load(r_opt)?
+        branches.load(&iterdir)?
     } else {
-        branches.scan(r_opt)?
+        branches.scan(&iterdir, r_opt)?
     };
-    let tickets = ticket::ticket_list(r_opt.iteration, sbb, r_opt.ping_maintainers);
-    let tickets = if let Some(ref storepaths_dir) = r_opt.filter_dir {
-        Applicable::new(storepaths_dir)?.filter(tickets)
-    } else {
-        tickets
-    };
-    make_issues(tickets, &dir, tracker.borrow())
+    let tickets = ticket::ticket_list(r_opt.iteration, sbb);
+    if !tickets.is_empty() {
+        info!("Creating issues");
+        tracker.create_issues(tickets, &r_opt.iterdir(&opt.basedir))?;
+    }
+    Ok(())
 }
 
 fn run() -> Result<()> {

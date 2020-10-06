@@ -1,4 +1,4 @@
-# taken from make-tarball.nix
+# Queries list of available packages. Adapted version from make-tarball.nix.
 { nixpkgsStable ? lib.cleanSource <nixpkgs>
 , pkgs ? import <nixpkgs> {}
 , lib ? pkgs.lib
@@ -33,12 +33,12 @@ pkgs.runCommand "packages-json"
     nix-env -I nixpkgs=${src} -f '<nixpkgs>' -qa --json --arg config 'import ${pkgConfig}' >> tmp
     echo '}' >> tmp
     mkdir $out
-    < tmp sed "s|${src}/||g" | jq -c . > $out/packages.json
+    < tmp sed "s|${src}/||g" | jq . > $out/packages.json
 
     # Validate we don't keep references.
     # The [^/] part of the expression could be changed for a better
     # representation of a nix store path.
-    if jq < $out/packages.json | rg '/nix/store/[^/]+/'; then
+    if rg '/nix/store/[^/]+/' $out/packages.json; then
       echo "Errant nix store paths in packages.json output." >&2
       exit 1
     fi

@@ -2,20 +2,25 @@ use super::{Issue, Tracker};
 use crate::ticket::Ticket;
 
 use clap::{crate_name, crate_version};
+use colored::*;
 use reqwest::blocking::Client;
 use reqwest::header::*;
 use serde::Deserialize;
+use serde::Serialize;
 use serde_json::json;
 use std::fmt;
-use std::path::Path;
+use std::fs::File;
+use std::io::BufWriter;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("Invalid GitHub API response: {res}")]
+    #[error("Invalid GitHub API response at {url}: {resp}")]
     API {
-        res: String,
+        url: String,
+        resp: String,
         #[source]
         e: serde_json::Error,
     },
@@ -25,8 +30,19 @@ pub enum Error {
     RepoFormat,
     #[error("Trying to construct invalid HTTP header")]
     Header(#[from] http::header::InvalidHeaderValue),
-    #[error("Cannot write issue file for '{}' into iteration dir", 0)]
-    Write(#[source] std::io::Error, String),
+    #[error("Cannot write issue file '{}'", 0)]
+    Write(PathBuf, #[source] std::io::Error),
+    #[error("JSON error while writing file '{}'", 0)]
+    JSON(PathBuf, #[source] serde_json::Error),
+}
+
+/// Shortcut
+fn api_err(url: &str, resp: String, e: serde_json::Error) -> Error {
+    Error::API {
+        url: url.to_string(),
+        resp,
+        e,
+    }
 }
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -65,11 +81,12 @@ struct Search {
 pub struct GitHub {
     client: Client,
     repo: RepoSpec,
+    notify: bool,
     url_for: UrlFor,
 }
 
 impl GitHub {
-    pub fn new(token: String, repo_spec: &str) -> Result<Self> {
+    pub fn new(token: String, repo_spec: &str, notify: bool) -> Result<Self> {
         let repo = repo_spec.parse()?;
         let mut h = HeaderMap::new();
         h.insert(AUTHORIZATION, format!("token {}", token).parse()?);
@@ -83,25 +100,30 @@ impl GitHub {
         Ok(Self {
             client,
             repo,
+            notify,
             url_for,
         })
     }
 
     fn create(&self, tkt: &Ticket) -> Result<Issue> {
+        let url = &self.url_for.issues;
+        let mut body = String::with_capacity(4096);
+        tkt.render(&mut body, self.notify).ok();
         let res = self
             .client
-            .post(&self.url_for.issues)
+            .post(url)
             .json(&json!({
                 "title": tkt.summary(),
-                "body": tkt.to_string(),
+                "body": body,
                 "labels": vec!["1.severity: security"]
             }))
             .send()?;
         let txt = res.text()?;
-        serde_json::from_str(&txt).map_err(|e| Error::API { res: txt, e })
+        serde_json::from_str(&txt).map_err(|e| api_err(&url, txt, e))
     }
 
     fn related(&self, tkt: &Ticket) -> Result<Search> {
+        let url = &self.url_for.search;
         let query = format!(
             "\
 repo:{} is:open label:\"1.severity: security\" in:title \"Vulnerability roundup \" \" {}: \"",
@@ -110,73 +132,87 @@ repo:{} is:open label:\"1.severity: security\" in:title \"Vulnerability roundup 
         );
         let res = self
             .client
-            .get(&self.url_for.search)
+            .get(url)
             .query(&[("q", query)])
             .send()?
             .error_for_status()?
             .text()?;
-        serde_json::from_str(&res).map_err(|e| Error::API { res, e })
+        serde_json::from_str(&res).map_err(|e| api_err(&url, res, e))
     }
 
     fn comment(&self, number: u64, related: &[Issue]) -> Result<Comment> {
+        let url = &format!("{}/{}/comments", self.url_for.issues, number);
         let related: Vec<String> = related.iter().map(|i| format!("#{}", i.number)).collect();
         let res = self
             .client
-            .post(&format!("{}/{}/comments", self.url_for.issues, number))
+            .post(url)
             .json(&json!({
                 "body": format!("See also: {}", related.join(", "))
             }))
             .send()?
             .error_for_status()?
             .text()?;
-        serde_json::from_str(&res).map_err(|e| Error::API { res, e })
+        serde_json::from_str(&res).map_err(|e| api_err(&url, res, e))
     }
 
-    fn create_and_comment(&self, tkt: Ticket) -> Result<Ticket> {
-        let c = self.create(&tkt)?;
+    fn create_and_comment(&self, tkt: &Ticket) -> Result<Issue> {
+        let i = self.create(&tkt)?;
         let rel = self.related(&tkt)?;
         if !rel.items.is_empty() {
-            self.comment(c.number, &rel.items)?;
+            self.comment(i.number, &rel.items)?;
         }
-        Ok(Ticket {
-            issue_id: Some(c.number),
-            issue_url: Some(c.html_url),
-            ..tkt
-        })
+        Ok(i)
     }
 
     fn search_(&self, page: usize) -> Result<Search> {
+        let url = &self.url_for.search;
         let query = format!(
             "repo:{} is:open label:\"1.severity: security\" in:title \"Vulnerability roundup\"",
             self.repo
         );
         let res = self
             .client
-            .get(&self.url_for.search)
+            .get(url)
             .query(&[("q", query), ("page", page.to_string())])
             .send()?
             .error_for_status()?
             .text()?;
         // debug!("GitHub: {}", res);
-        serde_json::from_str(&res).map_err(|e| Error::API { res, e })
+        serde_json::from_str(&res).map_err(|e| api_err(url, res, e))
     }
 }
 
 // GitHub won't accept more than 30 issues in a batch
 const MAX_ISSUES: usize = 30;
 
+#[derive(Debug, Serialize, Default)]
+struct SavedIssue {
+    ticket: Ticket,
+    issue_id: u64,
+    issue_url: String,
+}
+
+fn json_file(iterdir: &Path, ticket: &Ticket) -> PathBuf {
+    iterdir.join(format!("github.{}.json", &ticket.name()))
+}
+
 impl Tracker for GitHub {
-    fn create_issues(&self, tickets: Vec<Ticket>, iterdir: &Path) -> Result<(), super::Error> {
-        let len = tickets.len();
-        for tkt in tickets.into_iter().take(MAX_ISSUES) {
-            match self.create_and_comment(tkt) {
-                Ok(updated) => updated
-                    .write(&iterdir)
-                    .map_err(|e| Error::Write(e, updated.name().to_string()))?,
-                Err(e) => error!("{:#}", e),
-            }
+    fn create_issues(&self, mut tickets: Vec<Ticket>, dir: &Path) -> Result<(), super::Error> {
+        tickets.retain(|tkt| !json_file(dir, tkt).exists());
+        for tkt in tickets.iter().take(MAX_ISSUES) {
+            let i = self.create_and_comment(&tkt)?;
+            info!("{}: #{}", tkt.name(), i.number.to_string().purple().bold());
+            let save = SavedIssue {
+                issue_id: i.number,
+                issue_url: i.url,
+                ticket: tkt.clone(),
+            };
+            let f = File::create(json_file(dir, &tkt))
+                .map_err(|e| Error::Write(json_file(dir, &tkt), e))?;
+            serde_json::to_writer_pretty(BufWriter::new(f), &save)
+                .map_err(|e| Error::JSON(json_file(dir, &tkt), e))?;
         }
-        if len > MAX_ISSUES {
+        if tickets.len() > MAX_ISSUES {
             warn!("Not all issues created due to rate limits. Wait 5 minutes and rerun with '-R'");
         }
         Ok(())
