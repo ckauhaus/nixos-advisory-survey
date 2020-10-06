@@ -47,4 +47,8 @@ impl Tracker for File {
     fn search(&self) -> Result<Vec<Issue>, super::Error> {
         Ok(Vec::new())
     }
+
+    fn name(&self) -> String {
+        "File".into()
+    }
 }

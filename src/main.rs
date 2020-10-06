@@ -17,6 +17,7 @@ use crate::ticket::Ticket;
 use crate::tracker::Tracker;
 
 use anyhow::{bail, Context, Error};
+use colored::*;
 use env_logger::Env;
 use std::borrow::Borrow;
 use std::io::stdout;
@@ -129,19 +130,7 @@ impl Roundup {
     }
 }
 
-fn count(opt: &Opt) -> Result<()> {
-    if opt.repo.is_none() {
-        warn!("No repository given");
-    }
-    let tracker = create_tracker(opt, false)?;
-    serde_json::to_writer_pretty(
-        stdout().lock(),
-        &count::count(tracker.borrow()).context("Failed to search issues")?,
-    )
-    .context("broken pipe")
-}
-
-fn create_tracker(opt: &Opt, ping_maintainers: bool) -> Result<Box<dyn Tracker>> {
+fn tracker(opt: &Opt, ping_maintainers: bool) -> Result<Box<dyn Tracker>> {
     Ok(match (&opt.repo, &opt.github_token) {
         (Some(repo), Some(token)) => Box::new(tracker::GitHub::new(
             token.to_string(),
@@ -149,16 +138,28 @@ fn create_tracker(opt: &Opt, ping_maintainers: bool) -> Result<Box<dyn Tracker>>
             ping_maintainers,
         )?),
         (Some(_), None) => bail!(
-            "No Github access token given either as option or via the GITHUB_TOKEN environment \
+            "No GitHub access token given either as option or via the GITHUB_TOKEN environment \
              variable"
         ),
         (_, _) => Box::new(tracker::File::new()),
     })
 }
 
+fn count(opt: &Opt) -> Result<()> {
+    if opt.repo.is_none() {
+        warn!("No repository given");
+    }
+    let tracker = tracker(opt, false)?;
+    serde_json::to_writer_pretty(
+        stdout().lock(),
+        &count::count(tracker.borrow()).context("Failed to search issues")?,
+    )
+    .context("broken pipe")
+}
+
 fn roundup(opt: &Opt, r_opt: &Roundup) -> Result<()> {
     let branches = Branches::with_repo(&r_opt.branches, &r_opt.nixpkgs)?;
-    let tracker = create_tracker(opt, r_opt.ping_maintainers)?;
+    let tracker = tracker(opt, r_opt.ping_maintainers)?;
     let iterdir = r_opt.iterdir(&opt.basedir);
     let sbb = if r_opt.no_run {
         branches.load(&iterdir)?
@@ -167,7 +168,7 @@ fn roundup(opt: &Opt, r_opt: &Roundup) -> Result<()> {
     };
     let tickets = ticket::ticket_list(r_opt.iteration, sbb);
     if !tickets.is_empty() {
-        info!("Creating issues");
+        info!("Creating issues in {} tracker", tracker.name().green());
         tracker.create_issues(tickets, &r_opt.iterdir(&opt.basedir))?;
     }
     Ok(())

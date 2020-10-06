@@ -27,7 +27,7 @@ pub static SYSTEM: &str = "x86_64-linux";
 
 type Str = SmolStr;
 
-/// Maintainer Github handle
+/// Maintainer GitHub handle
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Serialize, Deserialize)]
 #[serde(untagged)] // see https://serde.rs/enum-representations.html
 pub enum Maintainer {
@@ -71,8 +71,6 @@ pub fn maintainer_contacts(maint: &[Maintainer]) -> Vec<&Str> {
 pub struct NixEnvPkg {
     #[serde(rename = "name")]
     pub pkg: Str,
-    pub pname: Str,
-    pub version: Str,
     pub system: Str,
     pub meta: PkgMeta,
 }
@@ -136,15 +134,20 @@ impl AllPackages {
         );
         let packages_json =
             PathBuf::from(String::from_utf8(out.stdout)?.trim()).join("packages.json");
-        info!("{:?}", packages_json);
         let parse = || -> Result<Self> {
             Ok(serde_json::from_reader(BufReader::new(File::open(
                 &packages_json,
             )?))?)
         };
         let mut res = parse().with_context(|| format!("while parsing {:?}", packages_json))?;
-        res.packages
-            .retain(|_, v| v.meta.available && v.system == SYSTEM && !v.version.is_empty());
+        info!(
+            "{} pkgs in {}",
+            res.packages.len().to_string().yellow(),
+            packages_json.display()
+        );
+        res.packages.retain(|_, v| {
+            v.meta.available && v.system == SYSTEM && Package::from_str(&v.pkg).is_ok()
+        });
         Ok(res)
     }
 

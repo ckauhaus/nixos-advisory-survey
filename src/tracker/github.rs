@@ -201,7 +201,7 @@ impl Tracker for GitHub {
         tickets.retain(|tkt| !json_file(dir, tkt).exists());
         for tkt in tickets.iter().take(MAX_ISSUES) {
             let i = self.create_and_comment(&tkt)?;
-            info!("{}: #{}", tkt.name(), i.number.to_string().purple().bold());
+            info!("{}: {}", tkt.name(), i.html_url.purple());
             let save = SavedIssue {
                 issue_id: i.number,
                 issue_url: i.url,
@@ -228,6 +228,10 @@ impl Tracker for GitHub {
             }
         }
         Ok(iss)
+    }
+
+    fn name(&self) -> String {
+        format!("GitHub[{}]", self.repo)
     }
 }
 

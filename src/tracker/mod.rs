@@ -34,4 +34,7 @@ pub trait Tracker {
 
     /// Returns all open isssues
     fn search(&self) -> Result<Vec<Issue>, Error>;
+
+    /// Human readable tracker representation
+    fn name(&self) -> String;
 }

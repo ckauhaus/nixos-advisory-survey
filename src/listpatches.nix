@@ -1,10 +1,16 @@
-{ pkgs ? import <nixpkgs> {}
-, allPackages
-}:
+{ allPackages }:
 
 with builtins;
 
 let
+  pkgs = import <nixpkgs> {
+    overlays = [ (self: super: {
+      # work around https://github.com/NixOS/nixpkgs/issues/99286
+      suil-qt5 = null;
+    })
+    ];
+  };
+
   patchName =
     p: (if p ? name then p.name else if p ? outPath then p.outPath else toString p);
 
@@ -14,8 +20,10 @@ in
     (a: {
       name = a.name;
       value =
-        if isList a.patches
-        then (map patchName a.patches)
-        else [ (patchName a.patches) ];
+        let patches = a.patches or [];
+        in
+        if isList patches
+        then (map patchName patches)
+        else [ (patchName patches) ];
     })
     (filter (a: a ? name) (import allPackages { inherit pkgs; })))

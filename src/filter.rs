@@ -71,8 +71,6 @@ mod test {
         let pkg = Package::from_str(name).unwrap();
         NixEnvPkg {
             pkg: pkg.name.clone(),
-            pname: Str::from(pkg.pname()),
-            version: Str::from(pkg.version()),
             meta: PkgMeta {
                 outputs: outputs.iter().map(|s| Str::from(*s)).collect(),
                 ..PkgMeta::default()

@@ -34,12 +34,4 @@ pkgs.runCommand "packages-json"
     echo '}' >> tmp
     mkdir $out
     < tmp sed "s|${src}/||g" | jq . > $out/packages.json
-
-    # Validate we don't keep references.
-    # The [^/] part of the expression could be changed for a better
-    # representation of a nix store path.
-    if rg '/nix/store/[^/]+/' $out/packages.json; then
-      echo "Errant nix store paths in packages.json output." >&2
-      exit 1
-    fi
   ''
