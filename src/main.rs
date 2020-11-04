@@ -106,6 +106,9 @@ pub struct Roundup {
     /// Don't run vulnix (expects vulnix JSON output already present in iteration dir)
     #[structopt(short = "R", long)]
     no_run: bool,
+    /// Keep temporary files for debugging
+    #[structopt(short, long)]
+    keep: bool,
     /// Ping package maintainers
     #[structopt(short = "m", long)]
     ping_maintainers: bool,

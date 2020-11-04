@@ -5,6 +5,8 @@ use crate::Roundup;
 use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::Write;
 use std::path::Path;
 use std::process::Command;
 use tempfile::NamedTempFile;
@@ -123,6 +125,15 @@ impl InputPkgs {
         serde_json::to_writer(tf.as_file_mut(), &self.0)
             .with_context(|| format!("Failed to write vulnix packages.json to {:?}", tf.path()))?;
         Ok(tf)
+    }
+
+    /// Writes a nicely formatted copy of the input package list to `dst`.
+    pub fn save<P: AsRef<Path>>(&self, dst: P) -> Result<()> {
+        debug!("Saving input JSON as {:?}", dst.as_ref());
+        let mut f = File::create(dst)?;
+        serde_json::to_writer_pretty(&f, &self.0)?;
+        writeln!(f, "")?;
+        Ok(())
     }
 }
 

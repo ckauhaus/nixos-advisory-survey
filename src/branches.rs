@@ -192,12 +192,18 @@ impl Branches {
                 all_pkgs.retain(|pi| stores_filter.is_installed(pi))
             }
             let patches = all_pkgs.discover_patches(repo)?;
-            let pkgs = InputPkgs::new(&all_pkgs, patches).to_file()?;
+            let pkgs = InputPkgs::new(&all_pkgs, patches);
+            if r_opt.keep {
+                let savedpkgs = dir.join(&format!("input.{}.json", branch.name));
+                pkgs.save(&savedpkgs)
+                    .with_context(|| format!("Failed to write input pkgs to {:?}", savedpkgs))?;
+            }
+            let pkgs = pkgs.to_file()?;
             let scan_res = VulnixRes::run_vulnix(&branch.name, &pkgs, r_opt)
                 .with_context(|| {
                     format!(
-                        "Scan failed - keeping derivation list for reference in {}",
-                        pkgs.keep().expect("failed to persist tmp file").1.display()
+                        "Scan failed - keeping derivation list for reference in {:?}",
+                        pkgs.keep().expect("failed to persist tmp file").1
                     )
                 })?
                 .into_iter()
