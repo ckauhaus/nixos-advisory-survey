@@ -10,7 +10,7 @@ use serde::Serialize;
 use serde_json::json;
 use std::fmt;
 use std::fs::File;
-use std::io::BufWriter;
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use thiserror::Error;
@@ -31,9 +31,7 @@ pub enum Error {
     #[error("Trying to construct invalid HTTP header")]
     Header(#[from] http::header::InvalidHeaderValue),
     #[error("Cannot write issue file '{}'", 0)]
-    Write(PathBuf, #[source] std::io::Error),
-    #[error("JSON error while writing file '{}'", 0)]
-    JSON(PathBuf, #[source] serde_json::Error),
+    JSON(PathBuf, #[source] std::io::Error),
 }
 
 /// Shortcut
@@ -182,6 +180,10 @@ repo:{} is:open label:\"1.severity: security\" in:title \"Vulnerability roundup 
     }
 }
 
+fn json_file(dir: &Path, tkt: &Ticket) -> PathBuf {
+    dir.join(format!("github.{}.json", tkt.name()))
+}
+
 // GitHub won't accept more than 30 issues in a batch
 const MAX_ISSUES: usize = 30;
 
@@ -192,8 +194,14 @@ struct SavedIssue {
     issue_url: String,
 }
 
-fn json_file(iterdir: &Path, ticket: &Ticket) -> PathBuf {
-    iterdir.join(format!("github.{}.json", &ticket.name()))
+impl SavedIssue {
+    fn write(&self, dir: &Path) -> Result<(), std::io::Error> {
+        let mut f = File::create(json_file(dir, &self.ticket))?;
+        let w = BufWriter::new(f.try_clone().unwrap());
+        serde_json::to_writer_pretty(w, &self)?;
+        writeln!(f, "")?;
+        Ok(())
+    }
 }
 
 impl Tracker for GitHub {
@@ -202,15 +210,13 @@ impl Tracker for GitHub {
         for tkt in tickets.iter().take(MAX_ISSUES) {
             let i = self.create_and_comment(&tkt)?;
             info!("{}: {}", tkt.name(), i.html_url.purple());
-            let save = SavedIssue {
+            SavedIssue {
                 issue_id: i.number,
                 issue_url: i.url,
                 ticket: tkt.clone(),
-            };
-            let f = File::create(json_file(dir, &tkt))
-                .map_err(|e| Error::Write(json_file(dir, &tkt), e))?;
-            serde_json::to_writer_pretty(BufWriter::new(f), &save)
-                .map_err(|e| Error::JSON(json_file(dir, &tkt), e))?;
+            }
+            .write(dir)
+            .map_err(|e| Error::JSON(json_file(dir, &tkt), e))?;
         }
         if tickets.len() > MAX_ISSUES {
             warn!("Not all issues created due to rate limits. Wait 5 minutes and rerun with '-R'");
