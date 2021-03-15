@@ -84,6 +84,8 @@ pub struct PkgMeta {
     pub maintainers: Vec<Maintainer>,
     #[serde(rename = "outputsToInstall", default)]
     pub outputs: Vec<Str>,
+    #[serde(rename = "knownVulnerabilities", default)]
+    pub known_vulnerabilities: Vec<Str>,
 }
 
 /// Nix attribute name. Can also be a dotted expression like pythonPackages.docutils
@@ -304,6 +306,7 @@ impl TryFrom<String> for Package {
 #[cfg(test)]
 mod test {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn package_name_version() {
@@ -415,6 +418,29 @@ mod test {
         assert_eq!(
             maintainer_contacts(&n["sway-contrib.grimshot"].meta.maintainers),
             vec!["nest1", "nest2", "outer"]
+        );
+    }
+
+    #[test]
+    fn parse_known_vulnerabilities() {
+        let p: AllPackages = serde_json::from_value(json!({
+          "packages": {
+            "libav": {
+              "name": "libav-11.12",
+              "system": "x86_64-linux",
+              "meta": {
+                "knownVulnerabilities": [
+                  "CVE-2017-9051",
+                  "CVE-2018-5684"
+                ],
+              }
+            }
+          }
+        }))
+        .unwrap();
+        assert_eq!(
+            p.packages["libav"].meta.known_vulnerabilities,
+            vec!["CVE-2017-9051", "CVE-2018-5684"]
         );
     }
 }

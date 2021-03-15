@@ -1,7 +1,6 @@
 use lazy_static::lazy_static;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use smol_str::SmolStr;
 use std::cmp::{Ord, Ordering, PartialOrd};
 use std::convert::TryFrom;
 use std::fmt;
@@ -17,30 +16,36 @@ lazy_static! {
 /// Securty advisory identifier. Currently only CVEs are supported.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String")]
-pub struct Advisory(SmolStr);
+pub struct Advisory(u16, u64);
 
 impl Advisory {
+    #[allow(unused)]
+    pub fn new(year: u16, id: u64) -> Self {
+        Self(year, id)
+    }
+
     /// Represent myself as numeric tuple if possible. This is needed for sorting CVEs.
-    pub fn as_tuple(&self) -> (u16, u32) {
-        let c = CVESPEC.captures(&self.0).expect("invalid CVE format");
-        (c[1].parse().unwrap(), c[2].parse().unwrap())
+    pub fn as_tuple(&self) -> (u16, u64) {
+        // let c = ;
+        // (c[1].parse().unwrap(), c[2].parse().unwrap())
+        (self.0, self.1)
     }
 }
 
 #[derive(Debug, Error)]
 pub enum AdvErr {
-    #[error("Failed to parse CVE identifier `{}'", id)]
-    ParseCVE { id: String },
+    #[error("Failed to parse CVE identifier `{}'", 0)]
+    ParseCVE(String),
 }
 
 impl FromStr for Advisory {
     type Err = AdvErr;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if CVESPEC.is_match(s) {
-            Ok(Self(s.into()))
-        } else {
-            Err(AdvErr::ParseCVE { id: s.to_owned() })
+        let c = CVESPEC.captures(s).ok_or(AdvErr::ParseCVE(s.into()))?;
+        match (c[1].parse(), c[2].parse()) {
+            (Ok(year), Ok(id)) => Ok(Self(year, id)),
+            _ => Err(AdvErr::ParseCVE(s.into())),
         }
     }
 }
@@ -55,7 +60,7 @@ impl TryFrom<String> for Advisory {
 
 impl fmt::Display for Advisory {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
+        write!(f, "CVE-{}-{:04}", self.0, self.1)
     }
 }
 
@@ -79,7 +84,7 @@ mod test {
     use assert_matches::assert_matches;
 
     fn cve(y: u16, n: u64) -> Advisory {
-        Advisory(format!("CVE-{}-{:04}", y, n).into())
+        Advisory::new(y, n)
     }
 
     #[test]
@@ -92,10 +97,19 @@ mod test {
     #[test]
     fn parse_cve() {
         assert_eq!(
-            "CVE-2019-20484"
-                .parse::<Advisory>()
-                .expect("no parse error"),
+            "CVE-2019-20484".parse::<Advisory>().expect("parse error"),
             cve(2019, 20484)
+        );
+    }
+
+    #[test]
+    fn format_with_at_least_4_digits() {
+        assert_eq!(
+            "CVE-2014-190"
+                .parse::<Advisory>()
+                .expect("parse error")
+                .to_string(),
+            "CVE-2014-0190"
         );
     }
 
