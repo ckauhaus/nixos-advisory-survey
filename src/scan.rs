@@ -99,6 +99,7 @@ impl VulnixRes {
 struct InputPkg {
     name: Str,
     patches: Vec<String>,
+    known_vulnerabilities: Vec<Str>,
 }
 
 /// JSON package representation suitable as input to vulnix
@@ -114,6 +115,7 @@ impl InputPkgs {
             let pkg = InputPkg {
                 name: pkginfo.pkg.clone(),
                 patches: patches.remove(attr).unwrap_or_default(),
+                known_vulnerabilities: pkginfo.meta.known_vulnerabilities.clone(),
             };
             res.insert(attr.clone(), pkg);
         }

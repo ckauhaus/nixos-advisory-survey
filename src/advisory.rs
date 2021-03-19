@@ -1,9 +1,10 @@
 use lazy_static::lazy_static;
 use regex::Regex;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 use std::cmp::{Ord, Ordering, PartialOrd};
 use std::convert::TryFrom;
 use std::fmt;
+use std::io::{Cursor, Write};
 use std::str::FromStr;
 use thiserror::Error;
 
@@ -14,7 +15,7 @@ lazy_static! {
 }
 
 /// Securty advisory identifier. Currently only CVEs are supported.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
 #[serde(try_from = "String")]
 pub struct Advisory(u16, u64);
 
@@ -76,6 +77,23 @@ impl PartialOrd for Advisory {
     }
 }
 
+impl Serialize for Advisory {
+    fn serialize<S>(&self, ser: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut buf = [0u8; 32];
+        let mut buf = Cursor::new(&mut buf[..]);
+        buf.write_fmt(format_args!("CVE-{}-{:04}", self.0, self.1))
+            .expect("BUG: CVE serialize: value too long");
+        unsafe {
+            ser.serialize_str(std::str::from_utf8_unchecked(
+                &buf.get_ref()[..buf.position() as usize],
+            ))
+        }
+    }
+}
+
 // === Tests ===
 
 #[cfg(test)]
@@ -103,17 +121,6 @@ mod test {
     }
 
     #[test]
-    fn format_with_at_least_4_digits() {
-        assert_eq!(
-            "CVE-2014-190"
-                .parse::<Advisory>()
-                .expect("parse error")
-                .to_string(),
-            "CVE-2014-0190"
-        );
-    }
-
-    #[test]
     fn parse_invalid_cves() {
         assert_matches!("".parse::<Advisory>(), Err(AdvErr::ParseCVE { .. }));
         assert_matches!("foo".parse::<Advisory>(), Err(AdvErr::ParseCVE { .. }));
@@ -128,5 +135,21 @@ mod test {
     #[test]
     fn ordering() {
         assert!(cve(2019, 9999) < cve(2019, 10000));
+    }
+
+    #[test]
+    fn serialize() {
+        assert_eq!(
+            serde_json::to_string(&Advisory::new(2021, 134)).unwrap(),
+            "\"CVE-2021-0134\""
+        );
+    }
+
+    #[test]
+    fn deserialize() {
+        assert_eq!(
+            serde_json::from_str::<Advisory>("\"CVE-2021-12345\"").unwrap(),
+            Advisory::new(2021, 12345)
+        );
     }
 }
