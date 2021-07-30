@@ -70,13 +70,21 @@ impl Ticket {
         )?;
         let mut adv: Vec<(&Advisory, &Detail)> = self.affected.iter().collect();
         adv.sort_unstable_by(cmp_score);
-        for (advisory, details) in adv {
+        for (advisory, detail) in &adv {
             writeln!(
                 f,
-                "* [ ] [{adv}](https://nvd.nist.gov/vuln/detail/{adv}) {details}",
+                "* [ ] [{adv}](https://nvd.nist.gov/vuln/detail/{adv}) {detail}",
                 adv = advisory,
-                details = details
+                detail = detail
             )?;
+        }
+        if adv.iter().any(|(_, d)| d.description.is_some()) {
+            writeln!(f, "\n## CVE details")?;
+        }
+        for (adv, detail) in &adv {
+            if let Some(ref desc) = detail.description {
+                writeln!(f, "\n### {adv}\n\n{desc}", adv = adv, desc = desc)?;
+            }
         }
         let mut relevant: Vec<String> = self
             .affected
@@ -86,7 +94,7 @@ impl Ticket {
             .collect();
         relevant.sort();
         relevant.dedup();
-        writeln!(f, "\nScanned versions: {}.\n", relevant.join("; "))?;
+        writeln!(f, "\n-----\nScanned versions: {}.\n", relevant.join("; "))?;
         if notify {
             for contact in maintainer_contacts(&self.maintainers) {
                 writeln!(f, "Cc @{}", contact)?;
@@ -113,12 +121,14 @@ impl fmt::Display for Ticket {
 pub struct Detail {
     branches: Vec<Branch>,
     score: Option<OrderedFloat<f32>>,
+    description: Option<String>,
 }
 
 impl Detail {
-    fn new(score: Option<f32>) -> Self {
+    fn new(score: Option<f32>, description: Option<String>) -> Self {
         Self {
             score: score.map(OrderedFloat),
+            description,
             ..Default::default()
         }
     }
@@ -153,15 +163,17 @@ pub fn ticket_list(iteration: u32, scan_res: ScanByBranch) -> Vec<Ticket> {
     let mut scores = ScoreMap::default();
     // Maintainership may change across branches. Collect & notify all maintainers.
     let mut maintmap: HashMap<Package, Vec<Maintainer>> = HashMap::new();
+    let mut descmap: HashMap<Advisory, String> = HashMap::new();
     // Step 1: for each pkg, record all pairs (advisory, branch)
     let mut pkgmap: HashMap<Package, Vec<(Advisory, Branch)>> = HashMap::new();
-    for (branch, scan_results) in scan_res {
-        for res in scan_results {
+    for (branch, vulnix_res) in scan_res {
+        for mut res in vulnix_res {
             let m = maintmap.entry(res.pkg.clone()).or_insert_with(Vec::new);
             m.extend(res.maintainers);
             let p = pkgmap.entry(res.pkg).or_insert_with(Vec::new);
             p.extend(res.affected_by.into_iter().map(|adv| (adv, branch.clone())));
             scores.extend(res.cvssv3_basescore);
+            descmap.extend(res.description.drain());
         }
     }
     // Step 2: consolidate branches
@@ -172,9 +184,10 @@ pub fn ticket_list(iteration: u32, scan_res: ScanByBranch) -> Vec<Ticket> {
             let mut t = Ticket::new(iteration, pkg);
             for (advisory, branch) in advbr {
                 let score = scores.get(&advisory);
+                let desc = descmap.get(&advisory).map(|d| d.to_owned());
                 t.affected
                     .entry(advisory)
-                    .or_insert_with(|| Detail::new(score.cloned()))
+                    .or_insert_with(|| Detail::new(score.cloned(), desc))
                     .add(branch)
             }
             if let Some(maintainers) = maintmap.remove(&t.pkg) {
@@ -203,14 +216,14 @@ mod test {
     fn det(branches: &[&str], score: Option<f32>) -> Detail {
         Detail {
             branches: branches.iter().map(|&b| Branch::new(b)).collect(),
-            ..Detail::new(score)
+            ..Detail::new(score, None)
         }
     }
 
-    fn det_br(branches: &[&Branch], score: Option<f32>) -> Detail {
+    fn det_br(branches: &[&Branch], score: Option<f32>, desc: Option<String>) -> Detail {
         Detail {
             branches: branches.iter().map(|&b| b.clone()).collect(),
-            ..Detail::new(score)
+            ..Detail::new(score, desc)
         }
     }
 
@@ -289,9 +302,9 @@ mod test {
             iteration: 2,
             pkg: pkg("libtiff-4.0.9"),
             affected: hashmap! {
-                adv("CVE-2018-17000") => det_br(&[&br[0]], None),
-                adv("CVE-2018-17100") => det_br(&[&br[0]], Some(8.7)),
-                adv("CVE-2018-17101") => det_br(&[&br[0], &br[1]], Some(8.8)),
+                adv("CVE-2018-17000") => det_br(&[&br[0]], None, None),
+                adv("CVE-2018-17100") => det_br(&[&br[0]], Some(8.7), Some("Detail 17100".into())),
+                adv("CVE-2018-17101") => det_br(&[&br[0], &br[1]], Some(8.8), Some("Detail 17101".into())),
             },
             ..Ticket::default()
         };
@@ -310,6 +323,17 @@ mod test {
 * [ ] [CVE-2018-17100](https://nvd.nist.gov/vuln/detail/CVE-2018-17100) CVSSv3=8.7 (br0)\n\
 * [ ] [CVE-2018-17000](https://nvd.nist.gov/vuln/detail/CVE-2018-17000) (br0)\n\
 \n\
+## CVE details\n\
+\n\
+### CVE-2018-17101
+\n\
+Detail 17101\n\
+\n\
+### CVE-2018-17100
+\n\
+Detail 17100\n\
+\n\
+-----\n\
 Scanned versions: br0: 5d4a1a3897e; br1: 80738ed9dc0.\n\n\
         "
         );
@@ -321,7 +345,7 @@ Scanned versions: br0: 5d4a1a3897e; br1: 80738ed9dc0.\n\n\
         let tkt = Ticket {
             iteration: 3,
             pkg: pkg("libtiff-4.0.9"),
-            affected: hashmap! { adv("CVE-2018-17000") => det_br(&[&b], None) },
+            affected: hashmap! { adv("CVE-2018-17000") => det_br(&[&b], None, None) },
             maintainers: vec![Maintainer::new("ericson2314")],
             ..Ticket::default()
         };
@@ -340,13 +364,14 @@ Scanned versions: br0: 5d4a1a3897e; br1: 80738ed9dc0.\n\n\
         let tkt = Ticket {
             iteration: 1,
             pkg: pkg("libtiff-4.0.9"),
-            affected: hashmap! {adv("CVE-2018-17100") => det_br(&[&br[0]], Some(8.8))},
+            affected: hashmap! {adv("CVE-2018-17100") => det_br(&[&br[0]], Some(8.8), None)},
             ..Ticket::default()
         };
         assert!(
             tkt.to_string()
                 .contains("versions: nixos-18.09: 5d4a1a3897e"),
-            format!("branch summary not correct:\n{}", tkt)
+            "branch summary not correct:\n{}",
+            tkt
         );
     }
 

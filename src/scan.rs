@@ -13,6 +13,7 @@ use tempfile::NamedTempFile;
 
 type Str = smol_str::SmolStr;
 pub type ScoreMap = HashMap<Advisory, f32>;
+pub type DescriptionMap = HashMap<Advisory, String>;
 
 /// `vulnix` scan result item.
 ///
@@ -31,6 +32,8 @@ pub struct VulnixRes {
     pub cvssv3_basescore: ScoreMap,
     #[serde(default)]
     pub maintainers: Vec<Maintainer>,
+    #[serde(default)]
+    pub description: DescriptionMap,
 }
 
 type PkgMap = HashMap<Attr, NixEnvPkg>;
