@@ -4,7 +4,7 @@ use crate::Roundup;
 
 use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
@@ -12,8 +12,10 @@ use std::process::Command;
 use tempfile::NamedTempFile;
 
 type Str = smol_str::SmolStr;
-pub type ScoreMap = HashMap<Advisory, f32>;
-pub type DescriptionMap = HashMap<Advisory, String>;
+type PkgMap = HashMap<Attr, NixEnvPkg>;
+
+pub type ScoreMap = BTreeMap<Advisory, f32>;
+pub type DescriptionMap = BTreeMap<Advisory, String>;
 
 /// `vulnix` scan result item.
 ///
@@ -35,8 +37,6 @@ pub struct VulnixRes {
     #[serde(default)]
     pub description: DescriptionMap,
 }
-
-type PkgMap = HashMap<Attr, NixEnvPkg>;
 
 impl VulnixRes {
     #[allow(dead_code)]

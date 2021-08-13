@@ -108,7 +108,7 @@ fn resolve_rev(rev: &str, repo: &Repository) -> Result<String> {
 
 /// Saves JSON result dump for later consuption with `-R`/[`Branches::load`]
 fn snapshot<P: AsRef<Path>>(scan_res: &[VulnixRes], dest: P) -> Result<()> {
-    Ok(serde_json::to_writer(
+    Ok(serde_json::to_writer_pretty(
         BufWriter::new(File::create(dest)?),
         &scan_res,
     )?)

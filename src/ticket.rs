@@ -167,13 +167,13 @@ pub fn ticket_list(iteration: u32, scan_res: ScanByBranch) -> Vec<Ticket> {
     // Step 1: for each pkg, record all pairs (advisory, branch)
     let mut pkgmap: HashMap<Package, Vec<(Advisory, Branch)>> = HashMap::new();
     for (branch, vulnix_res) in scan_res {
-        for mut res in vulnix_res {
+        for res in vulnix_res {
             let m = maintmap.entry(res.pkg.clone()).or_insert_with(Vec::new);
             m.extend(res.maintainers);
             let p = pkgmap.entry(res.pkg).or_insert_with(Vec::new);
             p.extend(res.affected_by.into_iter().map(|adv| (adv, branch.clone())));
             scores.extend(res.cvssv3_basescore);
-            descmap.extend(res.description.drain());
+            descmap.extend(res.description.into_iter());
         }
     }
     // Step 2: consolidate branches
@@ -210,7 +210,7 @@ mod test {
     use crate::scan::VulnixRes;
     use crate::tests::{adv, br, create_branches, pkg};
 
-    use maplit::hashmap;
+    use maplit::{btreemap, hashmap};
 
     /// Helpers for quick construction of Detail structs
     fn det(branches: &[&str], score: Option<f32>) -> Detail {
@@ -265,7 +265,7 @@ mod test {
             Branch::new("br1") => vec![VulnixRes {
                 pkg: pkg("libtiff-4.0.9"),
                 affected_by: vec![adv("CVE-2018-17100"), adv("CVE-2018-17101")],
-                cvssv3_basescore: hashmap! {
+                cvssv3_basescore: btreemap! {
                     adv("CVE-2018-17100") => 8.8,
                     adv("CVE-2018-17101") => 8.7,
                 },
@@ -274,7 +274,7 @@ mod test {
             Branch::new("br2") => vec![VulnixRes {
                 pkg: pkg("libtiff-4.0.9"),
                 affected_by: vec![adv("CVE-2018-17101")],
-                cvssv3_basescore: hashmap! { adv("CVE-2018-17101") => 8.7 },
+                cvssv3_basescore: btreemap! { adv("CVE-2018-17101") => 8.7 },
                 ..VulnixRes::default()
             }],
         };
