@@ -117,7 +117,7 @@ impl GitHub {
             }))
             .send()?;
         let txt = res.text()?;
-        serde_json::from_str(&txt).map_err(|e| api_err(&url, txt, e))
+        serde_json::from_str(&txt).map_err(|e| api_err(url, txt, e))
     }
 
     fn related(&self, tkt: &Ticket) -> Result<Search> {
@@ -135,7 +135,7 @@ repo:{} is:open label:\"1.severity: security\" in:title \"Vulnerability roundup 
             .send()?
             .error_for_status()?
             .text()?;
-        serde_json::from_str(&res).map_err(|e| api_err(&url, res, e))
+        serde_json::from_str(&res).map_err(|e| api_err(url, res, e))
     }
 
     fn comment(&self, number: u64, related: &[Issue]) -> Result<Comment> {
@@ -150,12 +150,12 @@ repo:{} is:open label:\"1.severity: security\" in:title \"Vulnerability roundup 
             .send()?
             .error_for_status()?
             .text()?;
-        serde_json::from_str(&res).map_err(|e| api_err(&url, res, e))
+        serde_json::from_str(&res).map_err(|e| api_err(url, res, e))
     }
 
     fn create_and_comment(&self, tkt: &Ticket) -> Result<Issue> {
-        let i = self.create(&tkt)?;
-        let rel = self.related(&tkt)?;
+        let i = self.create(tkt)?;
+        let rel = self.related(tkt)?;
         if !rel.items.is_empty() {
             self.comment(i.number, &rel.items)?;
         }
@@ -199,7 +199,7 @@ impl SavedIssue {
         let mut f = File::create(json_file(dir, &self.ticket))?;
         let w = BufWriter::new(f.try_clone().unwrap());
         serde_json::to_writer_pretty(w, &self)?;
-        writeln!(f, "")?;
+        writeln!(f)?;
         Ok(())
     }
 }
@@ -208,7 +208,7 @@ impl Tracker for GitHub {
     fn create_issues(&self, mut tickets: Vec<Ticket>, dir: &Path) -> Result<(), super::Error> {
         tickets.retain(|tkt| !json_file(dir, tkt).exists());
         for tkt in tickets.iter().take(MAX_ISSUES) {
-            let i = self.create_and_comment(&tkt)?;
+            let i = self.create_and_comment(tkt)?;
             info!("{}: {}", tkt.name(), i.html_url.purple());
             SavedIssue {
                 issue_id: i.number,
@@ -216,7 +216,7 @@ impl Tracker for GitHub {
                 ticket: tkt.clone(),
             }
             .write(dir)
-            .map_err(|e| Error::JSON(json_file(dir, &tkt), e))?;
+            .map_err(|e| Error::JSON(json_file(dir, tkt), e))?;
         }
         if tickets.len() > MAX_ISSUES {
             warn!("Not all issues created due to rate limits. Wait 5 minutes and rerun with '-R'");

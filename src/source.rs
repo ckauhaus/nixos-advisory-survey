@@ -58,7 +58,7 @@ pub fn maintainer_contacts(maint: &[Maintainer]) -> Vec<&Str> {
                 github: Some(ref g),
                 ..
             } => Some(vec![g]),
-            Maintainer::Nested(sub) => Some(maintainer_contacts(&sub)),
+            Maintainer::Nested(sub) => Some(maintainer_contacts(sub)),
             _ => None,
         })
         .flatten()
@@ -189,12 +189,12 @@ impl AllPackages {
             tmp.keep()?.display(),
             String::from_utf8_lossy(&out.stderr)
         );
-        Ok(serde_json::from_slice(&out.stdout).with_context(|| {
+        serde_json::from_slice(&out.stdout).with_context(|| {
             format!(
                 "Failed to parse patch list: {}",
                 String::from_utf8_lossy(&out.stdout)
             )
-        })?)
+        })
     }
 
     pub fn retain<F>(&mut self, mut f: F)
@@ -226,7 +226,7 @@ impl Package {
     #[allow(unused)]
     fn new<S: AsRef<str>>(pname: S, version: S) -> Self {
         let mut name = pname.as_ref().to_owned();
-        name.push_str("-");
+        name.push('-');
         name.push_str(version.as_ref());
         Self {
             name: Str::from(name),

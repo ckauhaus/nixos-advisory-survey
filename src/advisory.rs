@@ -43,7 +43,9 @@ impl FromStr for Advisory {
     type Err = AdvErr;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let c = CVESPEC.captures(s).ok_or(AdvErr::ParseCVE(s.into()))?;
+        let c = CVESPEC
+            .captures(s)
+            .ok_or_else(|| AdvErr::ParseCVE(s.into()))?;
         match (c[1].parse(), c[2].parse()) {
             (Ok(year), Ok(id)) => Ok(Self(year, id)),
             _ => Err(AdvErr::ParseCVE(s.into())),

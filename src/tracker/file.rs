@@ -5,10 +5,9 @@ use crate::Ticket;
 
 use colored::*;
 use std::fs;
-use std::io::BufWriter;
-use std::io::Write;
-use std::path::Path;
-use std::path::PathBuf;
+use std::io::{BufWriter, Write};
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -39,6 +38,7 @@ impl Tracker for File {
             fs::File::create(f)
                 .and_then(|f| writeln!(BufWriter::new(f), "{:#}", tkt))
                 .map_err(|e| Error::IO(tkt.name().to_owned(), e))?;
+            std::thread::sleep(Duration::new(1, 0));
         }
         Ok(())
     }

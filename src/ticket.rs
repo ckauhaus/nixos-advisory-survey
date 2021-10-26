@@ -37,7 +37,7 @@ impl Ticket {
 
     /// Package name without version
     pub fn pname(&self) -> &str {
-        &self.pkg.pname()
+        self.pkg.pname()
     }
 
     /// Ticket headline
@@ -154,7 +154,7 @@ fn cmp_score(a: &(&Advisory, &Detail), b: &(&Advisory, &Detail)) -> Ordering {
     match left.cmp(&right) {
         Ordering::Greater => Ordering::Less,
         Ordering::Less => Ordering::Greater,
-        Ordering::Equal => a.0.partial_cmp(&b.0).unwrap_or(Ordering::Equal),
+        Ordering::Equal => a.0.partial_cmp(b.0).unwrap_or(Ordering::Equal),
     }
 }
 

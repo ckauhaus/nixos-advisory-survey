@@ -137,7 +137,7 @@ impl InputPkgs {
         debug!("Saving input JSON as {:?}", dst.as_ref());
         let mut f = File::create(dst)?;
         serde_json::to_writer_pretty(&f, &self.0)?;
-        writeln!(f, "")?;
+        writeln!(f)?;
         Ok(())
     }
 }

@@ -29,7 +29,7 @@ impl StoreContents {
         let mut known = HashSet::new();
         for entry in fs::read_dir(dir)? {
             let e = entry?;
-            if e.file_type()?.is_file() && !e.file_name().to_string_lossy().starts_with(".") {
+            if e.file_type()?.is_file() && !e.file_name().to_string_lossy().starts_with('.') {
                 known.extend(extract_derivations(&fs::read_to_string(&e.path())?))
             }
         }
