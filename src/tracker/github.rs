@@ -13,6 +13,7 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::time::Duration;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -217,6 +218,7 @@ impl Tracker for GitHub {
             }
             .write(dir)
             .map_err(|e| Error::JSON(json_file(dir, tkt), e))?;
+            std::thread::sleep(Duration::new(1, 0));
         }
         if tickets.len() > MAX_ISSUES {
             warn!("Not all issues created due to rate limits. Wait 5 minutes and rerun with '-R'");
