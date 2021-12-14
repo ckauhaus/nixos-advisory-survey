@@ -175,8 +175,9 @@ impl AllPackages {
             "--json",
             "--expr",
             include_str!("listpatches.nix"),
+            "--arg",
+            "allPackages",
         ])
-        .args(&["--arg", "allPackages"])
         .arg(&tmp)
         .env("NIX_PATH", "nixpkgs=.")
         .current_dir(workdir);
@@ -249,12 +250,6 @@ impl fmt::Display for Package {
     }
 }
 
-impl Into<String> for Package {
-    fn into(self) -> String {
-        self.to_string()
-    }
-}
-
 impl PartialEq<str> for Package {
     fn eq(&self, other: &str) -> bool {
         self.name.eq(other)
@@ -264,6 +259,12 @@ impl PartialEq<str> for Package {
 impl PartialEq<Str> for Package {
     fn eq(&self, other: &Str) -> bool {
         self.name.eq(other)
+    }
+}
+
+impl From<Package> for String {
+    fn from(pkg: Package) -> Self {
+        pkg.to_string()
     }
 }
 

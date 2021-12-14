@@ -18,8 +18,8 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("Invalid GitHub API response at {url}: {resp}")]
-    API {
+    #[error("Invalid GitHub Api response at {url}: {resp}")]
+    Api {
         url: String,
         resp: String,
         #[source]
@@ -32,12 +32,12 @@ pub enum Error {
     #[error("Trying to construct invalid HTTP header")]
     Header(#[from] http::header::InvalidHeaderValue),
     #[error("Cannot write issue file '{}'", 0)]
-    JSON(PathBuf, #[source] std::io::Error),
+    Json(PathBuf, #[source] std::io::Error),
 }
 
 /// Shortcut
 fn api_err(url: &str, resp: String, e: serde_json::Error) -> Error {
-    Error::API {
+    Error::Api {
         url: url.to_string(),
         resp,
         e,
@@ -48,6 +48,7 @@ type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// GitHub response to comment creation
 #[derive(Deserialize, Debug, Clone)]
+#[allow(unused)]
 struct Comment {
     id: u64,
     url: String,
@@ -217,7 +218,7 @@ impl Tracker for GitHub {
                 ticket: tkt.clone(),
             }
             .write(dir)
-            .map_err(|e| Error::JSON(json_file(dir, tkt), e))?;
+            .map_err(|e| Error::Json(json_file(dir, tkt), e))?;
             std::thread::sleep(Duration::new(1, 0));
         }
         if tickets.len() > MAX_ISSUES {
