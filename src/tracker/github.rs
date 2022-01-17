@@ -186,8 +186,8 @@ fn json_file(dir: &Path, tkt: &Ticket) -> PathBuf {
     dir.join(format!("github.{}.json", tkt.name()))
 }
 
-// GitHub won't accept more than 30 issues in a batch
-const MAX_ISSUES: usize = 30;
+// GitHub won't accept more than this many issues in a batch
+const MAX_ISSUES: usize = 15;
 
 #[derive(Debug, Serialize, Default)]
 struct SavedIssue {
