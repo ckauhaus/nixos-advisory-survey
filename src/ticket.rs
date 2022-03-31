@@ -1,7 +1,7 @@
 use crate::advisory::Advisory;
 use crate::branches::{Branch, ScanByBranch};
+use crate::packages::{maintainer_contacts, Maintainer, Package};
 use crate::scan::ScoreMap;
-use crate::source::{maintainer_contacts, Maintainer, Package};
 
 use ordered_float::OrderedFloat;
 use serde::Serialize;

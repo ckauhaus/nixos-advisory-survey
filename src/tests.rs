@@ -1,7 +1,7 @@
 //! Generic test helpers
 use crate::advisory::Advisory;
 use crate::branches::{Branch, Branches};
-use crate::source::Package;
+use crate::packages::Package;
 use std::str::FromStr;
 
 pub fn create_branches(names: &[&str]) -> Branches {

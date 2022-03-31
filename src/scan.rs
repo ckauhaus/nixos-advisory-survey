@@ -1,5 +1,5 @@
 use crate::advisory::Advisory;
-use crate::source::{AllPackages, Attr, Maintainer, NixEnvPkg, Package, Patches};
+use crate::packages::{AllPackages, Attr, Maintainer, NixEnvPkg, Package, Patches};
 use crate::Roundup;
 
 use anyhow::{ensure, Context, Result};
@@ -147,7 +147,7 @@ impl InputPkgs {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::source::maintainer_contacts;
+    use crate::packages::maintainer_contacts;
     use crate::tests::{br, create_branches};
 
     use std::error::Error;

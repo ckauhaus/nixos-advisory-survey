@@ -1,6 +1,6 @@
 use crate::filter::StoreContents;
+use crate::packages::AllPackages;
 use crate::scan::{InputPkgs, VulnixRes};
-use crate::source::AllPackages;
 use crate::Roundup;
 
 use anyhow::{bail, ensure, Context, Result};
@@ -140,7 +140,7 @@ impl Branches {
     /// List of branches with associated git repository. Used when scanning from source.
     pub fn with_repo(specs: &[Branch], repo: &Path) -> Result<Self> {
         let mut bs = Branches {
-            repo: Some(repo.to_owned()),
+            repo: Some(repo.canonicalize()?),
             ..Branches::init(specs)?
         };
         let repo = Repository::open(repo).context("Cannot open repository")?;

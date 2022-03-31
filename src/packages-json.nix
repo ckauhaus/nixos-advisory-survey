@@ -1,13 +1,10 @@
 # Queries list of available packages. Adapted version from make-tarball.nix.
-{ nixpkgsStable ? lib.cleanSource <nixpkgs>
-, pkgs ? import <nixpkgs> {}
-, lib ? pkgs.lib
-}:
+{ nixpkgs ? <nixpkgs> }:
 
-with lib;
+with import (fetchTarball "channel:nixos-unstable") {};
 
 let
-  src = nixpkgsStable;
+  src = lib.cleanSource nixpkgs;
   pkgConfig = builtins.toFile "package-config.nix" ''
     {
       # Ensures no aliases are in the results.
@@ -21,14 +18,15 @@ let
   '';
 
 in
-pkgs.runCommand "packages-json"
-  { buildInputs = with pkgs; [ nix jq git ripgrep ]; }
+runCommand "packages.json"
+  { buildInputs = with pkgs; [ nix jq ]; }
   ''
-    export NIX_DB_DIR=$TMPDIR
+    set -o pipefail
     export NIX_STATE_DIR=$TMPDIR
-    echo -n '{"commit":"00000000000","packages":' > tmp
-    nix-env -I nixpkgs=${src} -f '<nixpkgs>' -qa --json --arg config 'import ${pkgConfig}' >> tmp
-    echo '}' >> tmp
-    mkdir $out
-    < tmp sed "s|${src}/||g" | jq . > $out/packages.json
+    header "generating packages.json"
+    (
+      echo -n '{"version":2,"packages":'
+      nix-env -f '<nixpkgs>' -I nixpkgs=${src} -qa --meta --json --arg config 'import ${pkgConfig}'
+      echo '}'
+    ) | sed "s|${src}/||" | jq -c > $out
   ''

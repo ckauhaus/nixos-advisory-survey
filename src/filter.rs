@@ -1,4 +1,4 @@
-use crate::source::NixEnvPkg;
+use crate::packages::NixEnvPkg;
 
 use anyhow::Result;
 use std::collections::HashSet;
@@ -50,7 +50,7 @@ impl StoreContents {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::source::{NixEnvPkg, Package, PkgMeta};
+    use crate::packages::{NixEnvPkg, Package, PkgMeta};
 
     use std::str::FromStr;
 

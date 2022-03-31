@@ -7,6 +7,7 @@ let
     overlays = [ (self: super: {
       # work around https://github.com/NixOS/nixpkgs/issues/99286
       suil-qt5 = null;
+      tshark = null;
     })
     ];
   };

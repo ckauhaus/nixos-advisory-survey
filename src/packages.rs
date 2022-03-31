@@ -16,7 +16,7 @@ use std::fmt;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Write};
 use std::ops::{Deref, DerefMut};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 use std::str::{self, FromStr};
 use tempfile::NamedTempFile;
@@ -124,28 +124,26 @@ impl AllPackages {
             workdir.to_string_lossy().green()
         );
         let mut cmd = Command::new("nix-build");
-        cmd.args(&["-E", include_str!("packages-json.nix")])
-            .env("NIX_PATH", "nixpkgs=.")
-            .current_dir(&workdir);
+        cmd.args(&["-E", include_str!("packages-json.nix")]);
+        cmd.env("NIX_PATH", format!("nixpkgs={}", workdir.to_str().unwrap()));
         debug!("{:?}", cmd);
         let out = cmd.output().context("Cannot exec nix-build")?;
         ensure!(
             out.status.success(),
-            "nix-build failed: {}",
+            "nix-build stderr: {}",
             String::from_utf8_lossy(&out.stderr)
         );
-        let packages_json =
-            PathBuf::from(String::from_utf8(out.stdout)?.trim()).join("packages.json");
+        let packages_json = String::from_utf8(out.stdout)?;
         let parse = || -> Result<Self> {
             Ok(serde_json::from_reader(BufReader::new(File::open(
-                &packages_json,
+                packages_json.trim(),
             )?))?)
         };
         let mut res = parse().with_context(|| format!("while parsing {:?}", packages_json))?;
         info!(
             "{} pkgs in {}",
             res.packages.len().to_string().yellow(),
-            packages_json.display()
+            packages_json.trim()
         );
         res.packages.retain(|_, v| {
             v.meta.available && v.system == SYSTEM && Package::from_str(&v.pkg).is_ok()
